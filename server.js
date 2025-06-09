@@ -1,17 +1,5 @@
 require('dotenv').config();
 
-// --- TEMPORARY DEBUGGING LOGS (REMOVE AFTER FIXING) ---
-console.log("--- Railway Environment Variables Check ---");
-console.log("MONGO_URI:", process.env.MONGO_URI);
-console.log("SENDGRID_API_KEY:", process.env.SENDGRID_API_KEY);
-console.log("SENDER_EMAIL:", process.env.SENDER_EMAIL);
-console.log("JWT_SECRET:", process.env.JWT_SECRET);
-console.log("PORT:", process.env.PORT);
-console.log("BACKEND_URL:", process.env.BACKEND_URL);
-console.log("NODE_ENV:", process.env.NODE_ENV);
-console.log("--- End Environment Variables Check ---");
-// --- END TEMPORARY DEBUGGING LOGS ---
-
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
