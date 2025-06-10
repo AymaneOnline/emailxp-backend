@@ -1,9 +1,12 @@
+// emailxp/backend/controllers/campaignController.js
+
 const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const { sendEmail } = require('../services/emailService'); // Import the email sending service
 const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for tracking opens
+const cheerio = require('cheerio'); // --- NEW: Import cheerio for HTML parsing ---
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -143,7 +146,6 @@ const sendCampaign = asyncHandler(async (req, res) => {
     }
 
     // Get the subscribers for the associated list
-    // Ensure 'subscribers' array is populated correctly with actual subscriber documents
     const subscribers = await Subscriber.find({ list: campaign.list });
 
     if (subscribers.length === 0) {
@@ -158,8 +160,7 @@ const sendCampaign = asyncHandler(async (req, res) => {
     // --- IMPORTANT: Define your backend URL here ---
     // This is the base URL where your tracking pixel endpoint is hosted.
     // For local development, it's typically http://localhost:5000
-    // For deployment, replace with your actual server URL (e.g., https://your-app-backend.com)
-    // You should preferably store this in your .env file as BACKEND_URL
+    // For deployment, make sure process.env.BACKEND_URL is set (e.g., https://your-app-backend.com)
     const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 
 
@@ -168,7 +169,25 @@ const sendCampaign = asyncHandler(async (req, res) => {
         let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
         const personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
 
-        // --- INJECT THE TRACKING PIXEL INTO THE HTML CONTENT ---
+        // --- NEW: Process HTML content for click tracking using cheerio ---
+        if (personalizedHtml) {
+            const $ = cheerio.load(personalizedHtml); // Load HTML into cheerio
+            $('a').each((i, link) => {
+                const originalHref = $(link).attr('href');
+                // Only rewrite http(s) links, ignore mailto, tel, and internal anchors (#)
+                if (originalHref && (originalHref.startsWith('http://') || originalHref.startsWith('https://'))) {
+                    // Encode the original URL to safely pass it as a query parameter
+                    const encodedOriginalUrl = encodeURIComponent(originalHref);
+                    // Construct the click tracking URL
+                    const clickTrackingUrl = `${BACKEND_URL}/api/track/click/${campaign._id}/${subscriber._id}?url=${encodedOriginalUrl}`;
+                    $(link).attr('href', clickTrackingUrl); // Rewrite the link
+                }
+            });
+            personalizedHtml = $.html(); // Get the modified HTML back from cheerio
+        }
+        // --- END NEW: Click Tracking HTML processing ---
+
+        // --- Existing: INJECT THE TRACKING PIXEL INTO THE HTML CONTENT (after click tracking) ---
         const trackingPixelUrl = `${BACKEND_URL}/api/track/open/${campaign._id}/${subscriber._id}`;
         // Append the invisible 1x1 pixel image to the end of the HTML content
         personalizedHtml = `${personalizedHtml}<img src="${trackingPixelUrl}" width="1" height="1" style="display:block" alt="">`;
@@ -178,7 +197,7 @@ const sendCampaign = asyncHandler(async (req, res) => {
         const result = await sendEmail(
             subscriber.email,
             campaign.subject,
-            personalizedHtml, // Now includes the tracking pixel
+            personalizedHtml, // Now includes rewritten links AND the tracking pixel
             personalizedPlain
         );
 
@@ -190,10 +209,7 @@ const sendCampaign = asyncHandler(async (req, res) => {
 
     // After attempting to send, update campaign status to 'sent'
     campaign.status = 'sent';
-    campaign.sentAt = new Date(); // Use sentAt instead of sentDate for consistency/clarity
-    // Optional: You might want to track sent and failed counts here
-    // campaign.sentCount = results.filter(r => r.success).length;
-    // campaign.failedCount = results.filter(r => !r.success).length;
+    campaign.sentAt = new Date();
     await campaign.save();
 
     console.log(`Campaign "${campaign.name}" sending attempt completed.`);
@@ -213,7 +229,6 @@ const getCampaignOpenStats = async (req, res) => {
         const { campaignId } = req.params;
 
         // Ensure the campaign exists and belongs to the authenticated user
-        // We assume req.user.id is available from your auth middleware
         const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
 
         if (!campaign) {
@@ -224,7 +239,6 @@ const getCampaignOpenStats = async (req, res) => {
         const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
 
         // Count unique opens (by distinct subscribers) for this campaign
-        // .distinct() returns an array of distinct values, so we just get its length.
         const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
 
         res.json({
