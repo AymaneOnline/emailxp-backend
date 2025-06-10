@@ -188,6 +188,8 @@ const sendCampaign = asyncHandler(async (req, res) => {
         }
         // --- END NEW: Click Tracking HTML processing ---
 
+        console.log(`Processing subscriber: ID=${subscriber._id}, Email=${subscriber.email}`); // <-- ADD THIS LINE
+
         // --- Existing: INJECT THE TRACKING PIXEL INTO THE HTML CONTENT (after click tracking) ---
         const trackingPixelUrl = `${BACKEND_URL}/api/track/open/${campaign._id}/${subscriber._id}`;
         // Append the invisible 1x1 pixel image to the end of the HTML content
