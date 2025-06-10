@@ -1,294 +1,299 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import campaignService from '../services/campaignService';
-import listService from '../services/listService';
-import { useNavigate } from 'react-router-dom';
-import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
+// emailxp/backend/controllers/campaignController.js
 
-function CampaignManagement() {
-    const [campaigns, setCampaigns] = useState([]);
-    const [lists, setLists] = useState([]);
-    const [newCampaignData, setNewCampaignData] = useState({
-        name: '',
-        subject: '',
-        htmlContent: '',
-        plainTextContent: '',
-        list: '',
-    });
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
-    const [successMessage, setSuccessMessage] = useState(null);
-    const [campaignOpenStats, setCampaignOpenStats] = useState({});
-    // --- NEW STATE: To store click statistics, indexed by campaignId ---
-    const [campaignClickStats, setCampaignClickStats] = useState({});
-    // --- END NEW STATE ---
-    const navigate = useNavigate();
+const asyncHandler = require('express-async-handler');
+const Campaign = require('../models/Campaign');
+const List = require('../models/List');
+const Subscriber = require('../models/Subscriber');
+const { sendEmail } = require('../services/emailService'); // Import the email sending service
+const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for tracking opens
+const ClickEvent = require('../models/ClickEvent');
+const cheerio = require('cheerio'); // --- NEW: Import cheerio for HTML parsing ---
 
-    const fetchData = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const [campaignsData, listsData] = await Promise.all([
-                campaignService.getCampaigns(),
-                listService.getLists()
-            ]);
+// @desc    Get all campaigns for the authenticated user
+// @route   GET /api/campaigns
+// @access  Private
+const getCampaigns = asyncHandler(async (req, res) => {
+    const campaigns = await Campaign.find({ user: req.user.id }).populate('list', 'name');
+    res.status(200).json(campaigns);
+});
 
-            setCampaigns(campaignsData);
-            setLists(listsData);
+// @desc    Create a new campaign
+// @route   POST /api/campaigns
+// @access  Private
+const createCampaign = asyncHandler(async (req, res) => {
+    const { name, subject, htmlContent, plainTextContent, list: listId, status, scheduledAt } = req.body;
 
-            if (listsData.length > 0) {
-                setNewCampaignData(prev => ({ ...prev, list: listsData[0]._id }));
-            }
-
-            const statsPromises = campaignsData.map(campaign =>
-                Promise.all([
-                    campaignService.getCampaignOpenStats(campaign._id),
-                    campaignService.getCampaignClickStats(campaign._id) // --- NEW: Fetch Click Stats ---
-                ])
-            );
-            const allStats = await Promise.all(statsPromises);
-
-            const openStatsMap = {};
-            const clickStatsMap = {}; // --- NEW Map for Click Stats ---
-
-            allStats.forEach((campaignStats, index) => {
-                const campaignId = campaignsData[index]._id;
-                openStatsMap[campaignId] = campaignStats[0]; // First item is open stats
-                clickStatsMap[campaignId] = campaignStats[1]; // --- NEW: Second item is click stats ---
-            });
-
-            setCampaignOpenStats(openStatsMap);
-            setCampaignClickStats(clickStatsMap); // --- NEW: Set Click Stats State ---
-
-        } catch (err) {
-            console.error('Error fetching data:', err.response?.data || err.message);
-            setError(err.response?.data?.message || 'Failed to fetch data. Please login again.');
-            if (err.response && err.response.status === 401) {
-                localStorage.removeItem('user');
-                navigate('/login');
-            }
-        } finally {
-            setLoading(false);
-        }
-    }, [navigate]);
-
-    useEffect(() => {
-        fetchData();
-    }, [fetchData]);
-
-    const handleInputChange = (e) => {
-        const { name, value } = e.target;
-        setNewCampaignData({ ...newCampaignData, [name]: value });
-    };
-
-    const handleQuillChange = (content) => {
-        setNewCampaignData(prev => ({ ...prev, htmlContent: content, plainTextContent: content.replace(/<[^>]*>/g, '') }));
-    };
-
-    const handleCreateCampaign = async (e) => {
-        e.preventDefault();
-        setError(null);
-        setSuccessMessage(null);
-        if (!newCampaignData.name || !newCampaignData.subject || !newCampaignData.htmlContent || !newCampaignData.list) {
-            alert('Please fill in all required fields (Name, Subject, HTML Content, and select a List).');
-            return;
-        }
-        try {
-            await campaignService.createCampaign(newCampaignData);
-            setNewCampaignData({
-                name: '',
-                subject: '',
-                htmlContent: '',
-                plainTextContent: '',
-                list: lists.length > 0 ? lists[0]._id : '',
-            });
-            setSuccessMessage('Campaign created successfully!');
-            await fetchData();
-        } catch (err) {
-            console.error('Error creating campaign:', err.response?.data || err.message);
-            setError(err.response?.data?.message || 'Failed to create campaign.');
-        }
-    };
-
-    const handleDeleteCampaign = async (campaignId) => {
-        if (window.confirm('Are you sure you want to delete this campaign?')) {
-            setError(null);
-            setSuccessMessage(null);
-            try {
-                await campaignService.deleteCampaign(campaignId);
-                setSuccessMessage('Campaign deleted successfully!');
-                await fetchData();
-            } catch (err) {
-                console.error('Error deleting campaign:', err.response?.data || err.message);
-                setError(err.response?.data?.message || 'Failed to delete campaign.');
-            }
-        }
-    };
-
-    const handleSendCampaign = async (campaignId, campaignName, listName, subscriberCount) => {
-        if (subscriberCount === 0) {
-            alert(`The list "${listName}" has no subscribers. Please add subscribers to the list before sending this campaign.`);
-            return;
-        }
-        if (!window.confirm(`Are you sure you want to send "${campaignName}" to <span class="math-inline">\{listName\} \(</span>{subscriberCount} subscribers)? This action cannot be undone.`)) {
-            return;
-        }
-
-        setError(null);
-        setSuccessMessage(null);
-        try {
-            const response = await campaignService.sendCampaign(campaignId);
-            setSuccessMessage(`Campaign "${campaignName}" sending initiated! Total: ${response.totalSubscribers} subscribers. (Updates will appear shortly)`);
-            await fetchData();
-        } catch (err) {
-            console.error('Error sending campaign:', err.response?.data || err.message);
-            setError(err.response?.data?.message || 'Failed to send campaign.');
-        }
-    };
-
-
-    if (loading) {
-        return <div style={{ textAlign: 'center', marginTop: '50px' }}>Loading campaigns...</div>;
+    if (!name || !subject || !htmlContent || !listId) {
+        res.status(400);
+        throw new Error('Please include all required fields: name, subject, HTML content, and a target list.');
     }
 
-    return (
-        <div style={{ padding: '20px', maxWidth: '1000px', margin: '20px auto', border: '1px solid #eee', borderRadius: '8px', boxShadow: '2px 2px 5px rgba(0,0,0,0.1)' }}>
-            <h2>Email Campaigns</h2>
+    const targetList = await List.findById(listId);
+    if (!targetList) {
+        res.status(404);
+        throw new Error('Target list not found');
+    }
+    if (targetList.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to use this list for campaigns');
+    }
 
-            {error && <p style={{ color: 'red', marginBottom: '15px' }}>Error: {error}</p>}
-            {successMessage && <p style={{ color: 'green', marginBottom: '15px' }}>{successMessage}</p>}
+    const campaign = await Campaign.create({
+        user: req.user.id,
+        list: listId,
+        name,
+        subject,
+        htmlContent,
+        plainTextContent: plainTextContent || '',
+        status: status || 'draft',
+        scheduledAt: scheduledAt || null,
+    });
 
-            <form onSubmit={handleCreateCampaign} style={{ marginBottom: '30px', padding: '20px', border: '1px solid #ddd', borderRadius: '5px' }}>
-                <h3>Create New Campaign</h3>
-                <div style={{ marginBottom: '15px' }}>
-                    <label htmlFor="name" style={{ display: 'block', marginBottom: '5px' }}>Campaign Name:</label>
-                    <input
-                        type="text"
-                        id="name"
-                        name="name"
-                        value={newCampaignData.name}
-                        onChange={handleInputChange}
-                        required
-                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
-                    />
-                </div>
-                <div style={{ marginBottom: '15px' }}>
-                    <label htmlFor="subject" style={{ display: 'block', marginBottom: '5px' }}>Subject:</label>
-                    <input
-                        type="text"
-                        id="subject"
-                        name="subject"
-                        value={newCampaignData.subject}
-                        onChange={handleInputChange}
-                        required
-                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
-                    />
-                </div>
-                <div style={{ marginBottom: '15px' }}>
-                    <label htmlFor="list" style={{ display: 'block', marginBottom: '5px' }}>Target List:</label>
-                    <select
-                        id="list"
-                        name="list"
-                        value={newCampaignData.list}
-                        onChange={handleInputChange}
-                        required
-                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
-                    >
-                        <option value="">-- Select a List --</option>
-                        {lists.map(list => (
-                            <option key={list._id} value={list._id}>{list.name}</option>
-                        ))}
-                    </select>
-                    {lists.length === 0 && (
-                        <p style={{marginTop: '5px', color: '#ffc107'}}>No lists available. Please create a list first from the "Lists" page.</p>
-                    )}
-                </div>
-                <div style={{ marginBottom: '15px' }}>
-                    <label style={{ display: 'block', marginBottom: '5px' }}>Email HTML Content:</label>
-                    <ReactQuill
-                        theme="snow"
-                        value={newCampaignData.htmlContent}
-                        onChange={handleQuillChange}
-                        style={{ height: '200px', marginBottom: '40px' }}
-                    />
-                </div>
-                <button type="submit" style={{ padding: '10px 20px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginTop: '20px' }}>
-                    Create Campaign
-                </button>
-            </form>
+    res.status(201).json(campaign);
+});
 
-            {campaigns.length === 0 ? (
-                <p>You don't have any email campaigns yet. Create one above!</p>
-            ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '20px' }}>
-                    <thead>
-                        <tr style={{ backgroundColor: '#f2f2f2' }}>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Campaign Name</th>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Subject</th>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Target List</th>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Status</th>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Opens (Total/Unique)</th>
-                            {/* --- NEW COLUMN HEADER FOR CLICKS --- */}
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Clicks (Total/Unique)</th>
-                            {/* --- END NEW COLUMN HEADER --- */}
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Created At</th>
-                            <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {campaigns.map((campaign) => {
-                            const openStats = campaignOpenStats[campaign._id] || { totalOpens: 0, uniqueOpens: 0 };
-                            // --- NEW: Get click stats for the current campaign, with fallback to 0 ---
-                            const clickStats = campaignClickStats[campaign._id] || { totalClicks: 0, uniqueClicks: 0 };
-                            // --- END NEW ---
-                            return (
-                                <tr key={campaign._id}>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>{campaign.name}</td>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>{campaign.subject}</td>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                                        {campaign.list ? campaign.list.name : 'N/A'}
-                                    </td>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>{campaign.status}</td>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                                        {openStats.totalOpens}/{openStats.uniqueOpens}
-                                    </td>
-                                    {/* --- NEW COLUMN: Display Click Stats --- */}
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                                        {clickStats.totalClicks}/{clickStats.uniqueClicks}
-                                    </td>
-                                    {/* --- END NEW COLUMN --- */}
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>{new Date(campaign.createdAt).toLocaleDateString()}</td>
-                                    <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                                        <button
-                                            onClick={() => handleDeleteCampaign(campaign._id)}
-                                            style={{ padding: '5px 10px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '10px' }}
-                                        >
-                                            Delete
-                                        </button>
-                                        {campaign.status === 'draft' || campaign.status === 'paused' ? (
-                                            <button
-                                                onClick={() => {
-                                                    const targetList = lists.find(l => l._id === (campaign.list && campaign.list._id));
-                                                    const subscriberCount = targetList?.subscribers?.length || 0;
-                                                    const listName = campaign.list?.name || 'Unknown List';
-                                                    handleSendCampaign(campaign._id, campaign.name, listName, subscriberCount);
-                                                }}
-                                                style={{ padding: '5px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-                                            >
-                                                Send
-                                            </button>
-                                        ) : (
-                                            <span style={{ color: '#6c757d', marginLeft: '10px' }}>{campaign.status}</span>
-                                        )}
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            )}
-        </div>
-    );
-}
+// @desc    Get a single campaign by ID for the authenticated user
+// @route   GET /api/campaigns/:id
+// @access  Private
+const getCampaignById = asyncHandler(async (req, res) => {
+    const campaign = await Campaign.findById(req.params.id).populate('list', 'name');
 
-export default CampaignManagement;
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to view this campaign');
+    }
+
+    res.status(200).json(campaign);
+});
+
+// @desc    Update a campaign
+// @route   PUT /api/campaigns/:id
+// @access  Private
+const updateCampaign = asyncHandler(async (req, res) => {
+    const campaign = await Campaign.findById(req.params.id);
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to update this campaign');
+    }
+
+    if (req.body.list) {
+        const newList = await List.findById(req.body.list);
+        if (!newList || newList.user.toString() !== req.user.id) {
+            res.status(400);
+            throw new Error('Invalid or unauthorized target list provided');
+        }
+    }
+
+    const updatedCampaign = await Campaign.findByIdAndUpdate(req.params.id, req.body, {
+        new: true,
+    });
+
+    res.status(200).json(updatedCampaign);
+});
+
+// @desc    Delete a campaign
+// @route   DELETE /api/campaigns/:id
+// @access  Private
+const deleteCampaign = asyncHandler(async (req, res) => {
+    const campaign = await Campaign.findById(req.params.id);
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to delete this campaign');
+    }
+
+    await campaign.deleteOne();
+
+    res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
+});
+
+// @desc    Send a campaign to its associated list subscribers
+// @route   POST /api/campaigns/:id/send
+// @access  Private
+const sendCampaign = asyncHandler(async (req, res) => {
+    const campaignId = req.params.id;
+
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to send this campaign');
+    }
+
+    if (campaign.status === 'sent' || campaign.status === 'sending') {
+        res.status(400);
+        throw new Error(`Campaign already in '${campaign.status}' state. Cannot send again.`);
+    }
+
+    // Get the subscribers for the associated list
+    const subscribers = await Subscriber.find({ list: campaign.list });
+
+    if (subscribers.length === 0) {
+        res.status(400);
+        throw new Error('No subscribers found for this campaign\'s list.');
+    }
+
+    // Update campaign status to 'sending' before starting the send process
+    campaign.status = 'sending';
+    await campaign.save();
+
+    // --- IMPORTANT: Define your backend URL here ---
+    // This is the base URL where your tracking pixel endpoint is hosted.
+    // For local development, it's typically http://localhost:5000
+    // For deployment, make sure process.env.BACKEND_URL is set (e.g., https://your-app-backend.com)
+    const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
+
+
+    const sendPromises = subscribers.map(async (subscriber) => {
+        // Basic personalization: Replace {{name}} with subscriber's name
+        let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+        const personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+
+        // --- NEW: Process HTML content for click tracking using cheerio ---
+        if (personalizedHtml) {
+            const $ = cheerio.load(personalizedHtml); // Load HTML into cheerio
+            $('a').each((i, link) => {
+                const originalHref = $(link).attr('href');
+                // Only rewrite http(s) links, ignore mailto, tel, and internal anchors (#)
+                if (originalHref && (originalHref.startsWith('http://') || originalHref.startsWith('https://'))) {
+                    // Encode the original URL to safely pass it as a query parameter
+                    const encodedOriginalUrl = encodeURIComponent(originalHref);
+                    // Construct the click tracking URL
+                    const clickTrackingUrl = `${BACKEND_URL}/api/track/click/${campaign._id}/${subscriber._id}?url=${encodedOriginalUrl}`;
+                    $(link).attr('href', clickTrackingUrl); // Rewrite the link
+                }
+            });
+            personalizedHtml = $.html(); // Get the modified HTML back from cheerio
+        }
+        // --- END NEW: Click Tracking HTML processing ---
+
+        // --- Existing: INJECT THE TRACKING PIXEL INTO THE HTML CONTENT (after click tracking) ---
+        const trackingPixelUrl = `${BACKEND_URL}/api/track/open/${campaign._id}/${subscriber._id}`;
+        // Append the invisible 1x1 pixel image to the end of the HTML content
+        personalizedHtml = `${personalizedHtml}<img src="${trackingPixelUrl}" width="1" height="1" style="display:block" alt="">`;
+        // --- END TRACKING PIXEL INJECTION ---
+
+        // Send email to each subscriber using your emailService
+        const result = await sendEmail(
+            subscriber.email,
+            campaign.subject,
+            personalizedHtml, // Now includes rewritten links AND the tracking pixel
+            personalizedPlain
+        );
+
+        return { subscriber: subscriber.email, success: result.success, message: result.message };
+    });
+
+    // Wait for all emails to attempt to send
+    const results = await Promise.all(sendPromises);
+
+    // After attempting to send, update campaign status to 'sent'
+    campaign.status = 'sent';
+    campaign.sentAt = new Date();
+    await campaign.save();
+
+    console.log(`Campaign "${campaign.name}" sending attempt completed.`);
+    res.status(200).json({
+        message: 'Campaign sending process initiated and completed.',
+        totalSubscribers: subscribers.length,
+        // You can return summary counts if you wish
+        // sentCount: results.filter(r => r.success).length,
+        // failedCount: results.filter(r => !r.success).length,
+        // sentResults: results, // Consider if you want to send all results to frontend
+    });
+});
+
+// NEW FUNCTION: Get Open Statistics for a Specific Campaign
+const getCampaignOpenStats = async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+
+        // Ensure the campaign exists and belongs to the authenticated user
+        const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
+
+        if (!campaign) {
+            return res.status(404).json({ message: 'Campaign not found or unauthorized' });
+        }
+
+        // Count total opens for this campaign
+        const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
+
+        // Count unique opens (by distinct subscribers) for this campaign
+        const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+        res.json({
+            campaignId: campaignId,
+            totalOpens: totalOpens,
+            uniqueOpens: uniqueOpens,
+        });
+
+    } catch (error) {
+        console.error(`Error fetching open stats for campaign ${req.params.campaignId}:`, error);
+        res.status(500).json({ message: 'Server Error: Failed to fetch campaign open stats' });
+    }
+};
+
+// @desc    Get click statistics for a campaign
+// @route   GET /api/campaigns/:id/click-stats
+// @access  Private
+const getCampaignClickStats = asyncHandler(async (req, res) => {
+    const campaignId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        res.status(400);
+        throw new Error('Invalid Campaign ID');
+    }
+
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+    // Ensure user owns the campaign
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to view stats for this campaign');
+    }
+
+    const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
+    const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+    res.status(200).json({
+        campaignId: campaignId,
+        totalClicks,
+        uniqueClicks
+    });
+});
+
+
+module.exports = {
+    getCampaigns,
+    createCampaign,
+    getCampaignById,
+    updateCampaign,
+    deleteCampaign,
+    sendCampaign,
+    getCampaignOpenStats,
+    getCampaignClickStats,
+};
