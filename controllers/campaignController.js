@@ -262,7 +262,7 @@ const getCampaignOpenStats = async (req, res) => {
 // @route   GET /api/campaigns/:id/click-stats
 // @access  Private
 const getCampaignClickStats = asyncHandler(async (req, res) => {
-    const campaignId = req.params.id;
+    const campaignId = req.params.campaignId; 
 
     // --- ADD THESE DIAGNOSTIC LOGS ---
     console.log(`[BE Debug] getCampaignClickStats: Received campaignId: '${campaignId}'`);
