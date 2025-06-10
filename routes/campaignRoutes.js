@@ -7,6 +7,7 @@ const {
     updateCampaign,
     deleteCampaign,
     sendCampaign,
+    getCampaignOpenStats,
 } = require('../controllers/campaignController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -21,5 +22,7 @@ router.route('/:id')
     .delete(protect, deleteCampaign); // Delete a campaign
 
 router.post('/:id/send', protect, sendCampaign); // POST request to trigger sending
+
+router.get('/:campaignId/opens', getCampaignOpenStats); // NEW ROUTE: Get Open Stats for a specific campaign
 
 module.exports = router;
