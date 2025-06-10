@@ -264,18 +264,27 @@ const getCampaignOpenStats = async (req, res) => {
 const getCampaignClickStats = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
+    // --- ADD THESE DIAGNOSTIC LOGS ---
+    console.log(`[BE Debug] getCampaignClickStats: Received campaignId: '${campaignId}'`);
+    console.log(`[BE Debug] getCampaignClickStats: campaignId length: ${campaignId.length}`);
+    console.log(`[BE Debug] getCampaignClickStats: isObjectIdValid(${campaignId})? ${mongoose.Types.ObjectId.isValid(campaignId)}`);
+    // --- END DIAGNOSTIC LOGS ---
+
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        console.error(`[BE Error] Invalid Campaign ID detected by isValid: '${campaignId}'`); // Log before throwing
         res.status(400);
         throw new Error('Invalid Campaign ID');
     }
 
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) {
+        console.warn(`[BE Warn] Campaign not found for ID: ${campaignId}. User: ${req.user.id}`); // Log if not found
         res.status(404);
         throw new Error('Campaign not found');
     }
     // Ensure user owns the campaign
     if (campaign.user.toString() !== req.user.id) {
+        console.warn(`[BE Warn] Unauthorized access attempt for campaign ${campaignId} by user ${req.user.id}`);
         res.status(401);
         throw new Error('Not authorized to view stats for this campaign');
     }
@@ -283,6 +292,7 @@ const getCampaignClickStats = asyncHandler(async (req, res) => {
     const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
     const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
 
+    console.log(`[BE Debug] getCampaignClickStats: Found ${totalClicks} total clicks and ${uniqueClicks} unique clicks for ${campaignId}`);
     res.status(200).json({
         campaignId: campaignId,
         totalClicks,
