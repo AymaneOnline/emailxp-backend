@@ -3,6 +3,7 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const { sendEmail } = require('../services/emailService'); // Import the email sending service
+const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for tracking opens
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -206,6 +207,39 @@ const sendCampaign = asyncHandler(async (req, res) => {
     });
 });
 
+// NEW FUNCTION: Get Open Statistics for a Specific Campaign
+const getCampaignOpenStats = async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+
+        // Ensure the campaign exists and belongs to the authenticated user
+        // We assume req.user.id is available from your auth middleware
+        const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
+
+        if (!campaign) {
+            return res.status(404).json({ message: 'Campaign not found or unauthorized' });
+        }
+
+        // Count total opens for this campaign
+        const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
+
+        // Count unique opens (by distinct subscribers) for this campaign
+        // .distinct() returns an array of distinct values, so we just get its length.
+        const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+        res.json({
+            campaignId: campaignId,
+            totalOpens: totalOpens,
+            uniqueOpens: uniqueOpens,
+        });
+
+    } catch (error) {
+        console.error(`Error fetching open stats for campaign ${req.params.campaignId}:`, error);
+        res.status(500).json({ message: 'Server Error: Failed to fetch campaign open stats' });
+    }
+};
+
+
 module.exports = {
     getCampaigns,
     createCampaign,
@@ -213,4 +247,5 @@ module.exports = {
     updateCampaign,
     deleteCampaign,
     sendCampaign,
+    getCampaignOpenStats,
 };
