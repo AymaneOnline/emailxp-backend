@@ -9,6 +9,8 @@ const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for 
 const ClickEvent = require('../models/ClickEvent');
 const cheerio = require('cheerio'); // --- NEW: Import cheerio for HTML parsing ---
 
+const mongoose = require('mongoose');
+
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
 // @access  Private
