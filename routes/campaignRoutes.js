@@ -23,6 +23,6 @@ router.route('/:id')
 
 router.post('/:id/send', protect, sendCampaign); // POST request to trigger sending
 
-router.get('/:campaignId/opens', getCampaignOpenStats); // NEW ROUTE: Get Open Stats for a specific campaign
+router.get('/:campaignId/opens', protect, getCampaignOpenStats); // NEW ROUTE: Get Open Stats for a specific campaign
 
 module.exports = router;
