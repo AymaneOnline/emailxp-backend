@@ -4,12 +4,19 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const { sendEmail } = require('../services/emailService'); // Import the email sending service
+// --- REMOVED: Direct import of sendEmail from here. Its logic is now within executeSendCampaign in campaignScheduler.js. ---
+// const { sendEmail } = require('../services/emailService'); 
 const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for tracking opens
 const ClickEvent = require('../models/ClickEvent');
-const cheerio = require('cheerio'); // --- NEW: Import cheerio for HTML parsing ---
+// --- REMOVED: Direct import of cheerio from here. Its logic is now within executeSendCampaign in campaignScheduler.js. ---
+// const cheerio = require('cheerio'); 
 
 const mongoose = require('mongoose');
+
+// --- ADDED: Import the refactored campaign sending logic from the scheduler utility ---
+// This function handles the actual email sending process for both immediate and scheduled campaigns.
+const { executeSendCampaign } = require('../utils/campaignScheduler');
+// --- END ADDED ---
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -120,12 +127,12 @@ const deleteCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to delete this campaign');
     }
 
-    await campaign.deleteOne();
+    await campaign.deleteOne(); // This will trigger the pre-delete hook in the Campaign model
 
     res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
 });
 
-// @desc    Send a campaign to its associated list subscribers
+// @desc    Send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
 const sendCampaign = asyncHandler(async (req, res) => {
@@ -143,93 +150,37 @@ const sendCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to send this campaign');
     }
 
-    if (campaign.status === 'sent' || campaign.status === 'sending') {
+    // --- UPDATED LOGIC: Only allow 'draft' campaigns to be sent immediately via this API endpoint ---
+    // Scheduled campaigns are handled by the background scheduler.
+    if (campaign.status !== 'draft') {
         res.status(400);
-        throw new Error(`Campaign already in '${campaign.status}' state. Cannot send again.`);
+        throw new Error(`Campaign status is '${campaign.status}'. Only 'draft' campaigns can be sent immediately. Scheduled campaigns are handled by the scheduler.`);
     }
 
-    // Get the subscribers for the associated list
-    const subscribers = await Subscriber.find({ list: campaign.list });
+    // --- UPDATED LOGIC: Call the refactored executeSendCampaign from the scheduler utility ---
+    // This centralizes the email sending logic and status updates.
+    const sendResult = await executeSendCampaign(campaignId);
 
-    if (subscribers.length === 0) {
-        res.status(400);
-        throw new Error('No subscribers found for this campaign\'s list.');
+    if (sendResult.success) {
+        res.status(200).json({
+            message: sendResult.message,
+            totalSubscribers: sendResult.totalSubscribers,
+            emailsSent: sendResult.successfulSends,
+        });
+    } else {
+        // Handle cases where executeSendCampaign reports an error (e.g., no subscribers, send failures)
+        res.status(500).json({ // Return 500 for internal send failures reported by executeSendCampaign
+            message: sendResult.message || 'Failed to send campaign due to an internal error.',
+            error: sendResult.error || 'Unknown error during campaign send.',
+        });
     }
-
-    // Update campaign status to 'sending' before starting the send process
-    campaign.status = 'sending';
-    await campaign.save();
-
-    // --- IMPORTANT: Define your backend URL here ---
-    // This is the base URL where your tracking pixel endpoint is hosted.
-    // For local development, it's typically http://localhost:5000
-    // For deployment, make sure process.env.BACKEND_URL is set (e.g., https://your-app-backend.com)
-    const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
-
-
-    const sendPromises = subscribers.map(async (subscriber) => {
-        // Basic personalization: Replace {{name}} with subscriber's name
-        let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-        const personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-
-        // --- NEW: Process HTML content for click tracking using cheerio ---
-        if (personalizedHtml) {
-            const $ = cheerio.load(personalizedHtml); // Load HTML into cheerio
-            $('a').each((i, link) => {
-                const originalHref = $(link).attr('href');
-                // Only rewrite http(s) links, ignore mailto, tel, and internal anchors (#)
-                if (originalHref && (originalHref.startsWith('http://') || originalHref.startsWith('https://'))) {
-                    // Encode the original URL to safely pass it as a query parameter
-                    const encodedOriginalUrl = encodeURIComponent(originalHref);
-                    // Construct the click tracking URL
-                    const clickTrackingUrl = `${BACKEND_URL}/api/track/click/${campaign._id}/${subscriber._id}?url=${encodedOriginalUrl}`;
-                    $(link).attr('href', clickTrackingUrl); // Rewrite the link
-                }
-            });
-            personalizedHtml = $.html(); // Get the modified HTML back from cheerio
-        }
-        // --- END NEW: Click Tracking HTML processing ---
-
-        console.log(`Processing subscriber: ID=${subscriber._id}, Email=${subscriber.email}`); // <-- ADD THIS LINE
-
-        // --- Existing: INJECT THE TRACKING PIXEL INTO THE HTML CONTENT (after click tracking) ---
-        const trackingPixelUrl = `${BACKEND_URL}/api/track/open/${campaign._id}/${subscriber._id}`;
-        // Append the invisible 1x1 pixel image to the end of the HTML content
-        personalizedHtml = `${personalizedHtml}<img src="${trackingPixelUrl}" width="1" height="1" style="display:block" alt="">`;
-        // --- END TRACKING PIXEL INJECTION ---
-
-        // Send email to each subscriber using your emailService
-        const result = await sendEmail(
-            subscriber.email,
-            campaign.subject,
-            personalizedHtml, // Now includes rewritten links AND the tracking pixel
-            personalizedPlain
-        );
-
-        return { subscriber: subscriber.email, success: result.success, message: result.message };
-    });
-
-    // Wait for all emails to attempt to send
-    const results = await Promise.all(sendPromises);
-
-    // After attempting to send, update campaign status to 'sent'
-    campaign.status = 'sent';
-    campaign.sentAt = new Date();
-    await campaign.save();
-
-    console.log(`Campaign "${campaign.name}" sending attempt completed.`);
-    res.status(200).json({
-        message: 'Campaign sending process initiated and completed.',
-        totalSubscribers: subscribers.length,
-        // You can return summary counts if you wish
-        // sentCount: results.filter(r => r.success).length,
-        // failedCount: results.filter(r => !r.success).length,
-        // sentResults: results, // Consider if you want to send all results to frontend
-    });
+    // --- END UPDATED LOGIC ---
 });
 
-// NEW FUNCTION: Get Open Statistics for a Specific Campaign
-const getCampaignOpenStats = async (req, res) => {
+// @desc    Get Open Statistics for a Specific Campaign
+// @route   GET /api/campaigns/:campaignId/opens
+// @access  Private
+const getCampaignOpenStats = asyncHandler(async (req, res) => { 
     try {
         const { campaignId } = req.params;
 
@@ -256,29 +207,33 @@ const getCampaignOpenStats = async (req, res) => {
         console.error(`Error fetching open stats for campaign ${req.params.campaignId}:`, error);
         res.status(500).json({ message: 'Server Error: Failed to fetch campaign open stats' });
     }
-};
+});
 
 // @desc    Get click statistics for a campaign
-// @route   GET /api/campaigns/:id/click-stats
+// @route   GET /api/campaigns/:campaignId/clicks
 // @access  Private
 const getCampaignClickStats = asyncHandler(async (req, res) => {
+    // --- FIX: Access the parameter name correctly as defined in the route (campaignRoutes.js) ---
     const campaignId = req.params.campaignId; 
 
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
-        console.error(`[BE Error] Invalid Campaign ID detected by isValid: '${campaignId}'`); // Log before throwing
+        // You can uncomment diagnostic logs if needed for future debugging:
+        // console.error(`[BE Error] Invalid Campaign ID detected by isValid: '${campaignId}'`); 
         res.status(400);
         throw new Error('Invalid Campaign ID');
     }
 
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) {
-        console.warn(`[BE Warn] Campaign not found for ID: ${campaignId}. User: ${req.user.id}`); // Log if not found
+        // You can uncomment diagnostic logs if needed for future debugging:
+        // console.warn(`[BE Warn] Campaign not found for ID: ${campaignId}. User: ${req.user.id}`); 
         res.status(404);
         throw new Error('Campaign not found');
     }
     // Ensure user owns the campaign
     if (campaign.user.toString() !== req.user.id) {
-        console.warn(`[BE Warn] Unauthorized access attempt for campaign ${campaignId} by user ${req.user.id}`);
+        // You can uncomment diagnostic logs if needed for future debugging:
+        // console.warn(`[BE Warn] Unauthorized access attempt for campaign ${campaignId} by user ${req.user.id}`);
         res.status(401);
         throw new Error('Not authorized to view stats for this campaign');
     }
@@ -292,7 +247,6 @@ const getCampaignClickStats = asyncHandler(async (req, res) => {
         uniqueClicks
     });
 });
-
 
 module.exports = {
     getCampaigns,

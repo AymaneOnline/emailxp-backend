@@ -1,3 +1,5 @@
+// emailxp/backend/server.js
+
 require('dotenv').config();
 
 const express = require('express');
@@ -7,7 +9,11 @@ const userRoutes = require('./routes/userRoutes');
 const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
-const trackingRoutes = require('./routes/trackingRoutes'); // Already added in previous step
+const trackingRoutes = require('./routes/trackingRoutes');
+
+// --- ADDED: Import the campaign scheduler ---
+const { startCampaignScheduler } = require('./utils/campaignScheduler');
+// --- END ADDED ---
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -50,4 +56,7 @@ app.use((err, req, res, next) => {
 // Start the server
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    // --- ADDED: Start the campaign scheduler here ---
+    startCampaignScheduler();
+    // --- END ADDED ---
 });
