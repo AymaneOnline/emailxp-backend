@@ -1,5 +1,9 @@
 // emailxp/backend/utils/campaignScheduler.js
 
+// --- Sentry Integration ---
+const Sentry = require('@sentry/node');
+// --- END Sentry Integration ---
+
 // Determine if the environment is production (e.g., set NODE_ENV=production on Railway)
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
@@ -48,6 +52,9 @@ const executeSendCampaign = async (campaignId) => {
         
         if (!campaign) {
             logger.error(`[Scheduler Error] Campaign with ID ${campaignId} not found.`);
+            // --- Sentry: Capture the error if campaign is not found ---
+            Sentry.captureException(new Error(`Campaign with ID ${campaignId} not found during execution.`));
+            // --- END Sentry ---
             await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' }); 
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' (not found).`);
             return { success: false, message: 'Campaign not found.' };
@@ -109,10 +116,20 @@ const executeSendCampaign = async (campaignId) => {
                         const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
                         const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
                         logger.error(`[Scheduler] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                        // --- Sentry: Capture individual send failures if sendEmail reports it as an error ---
+                        Sentry.captureException(new Error(`Email send fulfilled but failed: ${errorMsg}`), {
+                            extra: { campaignId, subscriberEmail: outcome.value.email, originalError: errorObj }
+                        });
+                        // --- END Sentry ---
                     }
                 } else if (outcome.status === 'rejected') {
                     failedSends++;
                     logger.error(`[Scheduler] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
+                    // --- Sentry: Capture rejected promises (e.g., network issues) ---
+                    Sentry.captureException(outcome.reason, {
+                        extra: { campaignId, subscriberId: 'unknown' } // You might not have subscriber ID on rejection
+                    });
+                    // --- END Sentry ---
                 }
             });
 
@@ -125,6 +142,9 @@ const executeSendCampaign = async (campaignId) => {
 
         } catch (innerSendingError) {
             logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
+            // --- Sentry: Capture critical errors during sendPromises processing ---
+            Sentry.captureException(innerSendingError);
+            // --- END Sentry ---
             campaign.status = 'failed'; 
             await campaign.save();
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
@@ -133,6 +153,9 @@ const executeSendCampaign = async (campaignId) => {
 
     } catch (outerCriticalError) {
         logger.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
+        // --- Sentry: Capture any top-level critical errors in executeSendCampaign ---
+        Sentry.captureException(outerCriticalError);
+        // --- END Sentry ---
         try {
             const currentCampaignState = await Campaign.findById(campaignId);
             if (currentCampaignState && currentCampaignState.status === 'sending') {
@@ -146,6 +169,9 @@ const executeSendCampaign = async (campaignId) => {
             }
         } catch (dbError) {
             logger.error(`[Scheduler] Failed to update campaign status after critical error:`, dbError);
+            // --- Sentry: Capture errors if DB update fails after a critical error ---
+            Sentry.captureException(dbError);
+            // --- END Sentry ---
         }
         return { success: false, message: `An unexpected critical error occurred: ${outerCriticalError.message}` };
     }
@@ -185,6 +211,9 @@ const startCampaignScheduler = () => {
                     await exports.executeSendCampaign(campaign._id); 
                 } catch (executionError) {
                     logger.error(`[Scheduler Error] Failed to execute send for campaign ID ${campaign._id}:`, executionError);
+                    // --- Sentry: Capture errors if executeSendCampaign fails to even start/complete ---
+                    Sentry.captureException(executionError);
+                    // --- END Sentry ---
                     try {
                         const failedCampaign = await Campaign.findById(campaign._id);
                         if (failedCampaign) {
@@ -194,11 +223,17 @@ const startCampaignScheduler = () => {
                         }
                     } catch (dbUpdateError) {
                         logger.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
+                        // --- Sentry: Capture errors if DB update fails here too ---
+                        Sentry.captureException(dbUpdateError);
+                        // --- END Sentry ---
                     }
                 }
             }
         } catch (error) {
             logger.error('[Scheduler Error] Error during scheduled campaign check:', error);
+            // --- Sentry: Capture top-level scheduler errors ---
+            Sentry.captureException(error);
+            // --- END Sentry ---
         }
     });
 
