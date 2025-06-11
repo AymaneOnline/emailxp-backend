@@ -1,16 +1,37 @@
 // emailxp/backend/utils/campaignScheduler.js
 
+// --- NEW: Add initialization logs ---
+console.log('[Scheduler Init] Starting campaignScheduler.js initialization...');
 const cron = require('node-cron');
+console.log('[Scheduler Init] node-cron loaded.');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const { sendEmail } = require('../services/emailService');
-const cheerio = require('cheerio'); // Used for HTML parsing/manipulation
+console.log('[Scheduler Init] Mongoose models loaded (Campaign, List, Subscriber).');
 
+// This import loads emailService.js. If there's an error in emailService.js's top-level scope, it might happen here.
+console.log('[Scheduler Init] Attempting to load emailService.js...');
+const { sendEmail } = require('../services/emailService');
+console.log('[Scheduler Init] emailService.js loaded.');
+
+// This import loads cheerio. If there's an error in cheerio's top-level scope, it might happen here.
+console.log('[Scheduler Init] Attempting to load cheerio...');
+const cheerio = require('cheerio');
+console.log('[Scheduler Init] cheerio loaded.');
+
+// Check the value of BACKEND_URL
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
+console.log(`[Scheduler Init] BACKEND_URL value: ${BACKEND_URL}`);
+
+console.log('[Scheduler Init] All initial imports and global variables processed.');
+// --- END NEW ---
+
 
 const executeSendCampaign = async (campaignId) => {
     console.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`);
+    // This is the very first line of executable code within the function's body.
+    // If this doesn't appear after "Attempting to execute send...", the crash is extremely early.
+    console.log(`[Scheduler] --- INSIDE executeSendCampaign for ID: ${campaignId} ---`); 
     try {
         const campaign = await Campaign.findById(campaignId).populate('list');
 
@@ -43,7 +64,6 @@ const executeSendCampaign = async (campaignId) => {
         await campaign.save();
         console.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} subscribers.`);
 
-        // --- NEW: Inner try-catch for the core sending logic ---
         try {
             const sendPromises = subscribers.map(async (subscriber) => {
                 let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
@@ -53,7 +73,6 @@ const executeSendCampaign = async (campaignId) => {
                 personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
                 personalizedPlain = `${personalizedPlain}\n\n---\nIf you noPlain longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
-                // ADDED LOG: This is the critical log before calling sendEmail
                 console.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email} (Campaign: ${campaign._id}, Subscriber: ${subscriber._id})`);
                 
                 const result = await sendEmail(
@@ -64,7 +83,6 @@ const executeSendCampaign = async (campaignId) => {
                     campaign._id,
                     subscriber._id
                 );
-                // ADDED LOG: Log the result received back from sendEmail
                 console.log(`[Scheduler] sendEmail for ${subscriber.email} returned:`, result);
                 return result; 
             });
@@ -98,20 +116,18 @@ const executeSendCampaign = async (campaignId) => {
             return { success: successfulSends > 0, message: 'Campaign sending completed.', totalSubscribers: subscribers.length, successfulSends, failedSends };
 
         } catch (innerSendingError) {
-            // This specific catch block will log errors that happen during the map/allSettled phase
             console.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
-            // Ensure status is set to 'failed' if an error occurred during sending phase
             campaign.status = 'failed';
             await campaign.save();
             console.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
             return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
         }
 
-    } catch (outerCriticalError) { // This is the original outer catch for general function errors
+    } catch (outerCriticalError) {
         console.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
         try {
             const campaign = await Campaign.findById(campaignId);
-            if (campaign && campaign.status === 'sending') { // Only try to update if still in 'sending' state
+            if (campaign && campaign.status === 'sending') {
                  campaign.status = 'failed';
                  await campaign.save();
                  console.log(`[Scheduler] Campaign ${campaignId} status reverted to 'failed' due to critical error.`);
@@ -144,17 +160,14 @@ const startCampaignScheduler = () => {
             console.log(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
 
             for (const campaign of campaignsToSend) {
-                // Change status to 'sending' BEFORE initiating send
                 campaign.status = 'sending';
                 await campaign.save();
                 console.log(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
 
-                // --- NEW: Add a try-catch directly around executeSendCampaign call ---
                 try {
-                    await exports.executeSendCampaign(campaign._id); // Use exports.executeSendCampaign
+                    await exports.executeSendCampaign(campaign._id);
                 } catch (executionError) {
                     console.error(`[Scheduler Error] Failed to execute send for campaign ID ${campaign._id}:`, executionError);
-                    // Attempt to set campaign status to 'failed' if an error occurs here
                     try {
                         const failedCampaign = await Campaign.findById(campaign._id);
                         if (failedCampaign) {
@@ -166,7 +179,6 @@ const startCampaignScheduler = () => {
                         console.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
                     }
                 }
-                // --- END NEW ---
             }
         } catch (error) {
             console.error('[Scheduler Error] Error during scheduled campaign check:', error);
