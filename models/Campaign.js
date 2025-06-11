@@ -45,6 +45,13 @@ const campaignSchema = mongoose.Schema(
             type: Date,
             default: null,
         },
+        // --- NEW: Link to Template Model ---
+        template: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Template',
+            default: null, // This campaign can be created without a template
+        },
+        // --- END NEW ---
     },
     {
         timestamps: true,
