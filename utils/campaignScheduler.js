@@ -30,7 +30,7 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const { sendEmail } = require('../services/emailService');
-const cheerio = require('cheerio');
+const cheerio = require('cheerio'); // You might use this for more advanced HTML manipulation
 
 // BACKEND_URL for unsubscribe links and click tracking
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
@@ -45,67 +45,83 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
  * @returns {object} An object indicating success/failure and relevant messages/stats.
  */
 const executeSendCampaign = async (campaignId) => {
-    logger.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`); 
+    let campaign; // Declare campaign here so it's accessible in catch block
+    let successfulSends = 0;
+    let failedSends = 0;
+
+    logger.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`);
 
     try {
-        const campaign = await Campaign.findById(campaignId).populate('list');
-        
+        campaign = await Campaign.findById(campaignId).populate('list');
+
         if (!campaign) {
             logger.error(`[Scheduler Error] Campaign with ID ${campaignId} not found.`);
-            // --- Sentry: Capture the error if campaign is not found ---
             Sentry.captureException(new Error(`Campaign with ID ${campaignId} not found during execution.`));
-            // --- END Sentry ---
-            await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' }); 
+            // If campaign is not found, attempt to mark it failed directly
+            await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' (not found).`);
             return { success: false, message: 'Campaign not found.' };
         }
 
         logger.log(`[Scheduler] Campaign status check: ${campaign.status}`);
 
-        if (campaign.status === 'sent') {
-            logger.warn(`[Scheduler Warn] Campaign ${campaign.name} (ID: ${campaign._id}) has already been sent. Skipping re-send.`);
-            return { success: false, message: `Campaign status is '${campaign.status}'.` };
+        // Prevent re-sending if already sent or if status isn't 'scheduled' or 'paused'
+        if (campaign.status === 'sent' || campaign.status === 'failed') {
+            logger.warn(`[Scheduler Warn] Campaign ${campaign.name} (ID: ${campaign._id}) has status '${campaign.status}'. Skipping re-send.`);
+            return { success: false, message: `Campaign status is '${campaign.status}'. Cannot send.` };
         }
-        
-        const subscribers = await Subscriber.find({ list: campaign.list._id });
+
+        // Set campaign status to 'sending' before fetching subscribers
+        campaign.status = 'sending';
+        await campaign.save();
+
+        // --- CRITICAL UPDATE: Filter for 'subscribed' status ---
+        const subscribers = await Subscriber.find({
+            list: campaign.list._id,
+            status: 'subscribed' // ONLY fetch subscribers who are marked as 'subscribed'
+        });
 
         if (subscribers.length === 0) {
-            logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) has no subscribers in list ${campaign.list.name}.`);
-            campaign.status = 'sent'; 
+            logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) has no 'subscribed' members in list ${campaign.list.name}.`);
+            campaign.status = 'sent'; // Mark as sent even if no active subscribers found
             campaign.sentAt = new Date();
             await campaign.save();
-            return { success: true, message: 'No subscribers found for this campaign. Campaign marked as sent.' };
+            return { success: true, message: 'No active subscribers found for this campaign. Campaign marked as sent.' };
         }
 
-        logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} subscribers.`);
+        logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} active subscribers.`);
 
         try {
             const sendPromises = subscribers.map(async (subscriber) => {
                 let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there'); 
-                
-                const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}/${campaign.list._id}`;
+                let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                // Also personalize the subject if it contains placeholders
+                let personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+
+                // --- GENERATE THE CORRECT UNSUBSCRIBE URL ---
+                // It should now point to the public unsubscribe route you set up in trackingRoutes.js
+                // Include campaignId as a query parameter for tracking
+                const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}?campaignId=${campaign._id}`;
+
+                // Append unsubscribe link to HTML and Plain text content
                 personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
                 personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
                 logger.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email}`);
-                
+
                 const result = await sendEmail(
                     subscriber.email,
-                    campaign.subject,
+                    personalizedSubject, // Use personalized subject
                     personalizedHtml,
                     personalizedPlain,
                     campaign._id,
                     subscriber._id
                 );
                 logger.log(`[Scheduler] sendEmail for ${subscriber.email} returned:`, result);
-                return result; 
+                return result;
             });
 
-            const results = await Promise.allSettled(sendPromises); 
-
-            let successfulSends = 0;
-            let failedSends = 0;
+            const results = await Promise.allSettled(sendPromises);
 
             results.forEach(outcome => {
                 if (outcome.status === 'fulfilled') {
@@ -116,24 +132,20 @@ const executeSendCampaign = async (campaignId) => {
                         const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
                         const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
                         logger.error(`[Scheduler] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
-                        // --- Sentry: Capture individual send failures if sendEmail reports it as an error ---
                         Sentry.captureException(new Error(`Email send fulfilled but failed: ${errorMsg}`), {
-                            extra: { campaignId, subscriberEmail: outcome.value.email, originalError: errorObj }
+                            extra: { campaignId: campaign._id, subscriberEmail: outcome.value.email, originalError: errorObj }
                         });
-                        // --- END Sentry ---
                     }
                 } else if (outcome.status === 'rejected') {
                     failedSends++;
                     logger.error(`[Scheduler] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
-                    // --- Sentry: Capture rejected promises (e.g., network issues) ---
                     Sentry.captureException(outcome.reason, {
-                        extra: { campaignId, subscriberId: 'unknown' } // You might not have subscriber ID on rejection
+                        extra: { campaignId: campaign._id, subscriberId: 'unknown' }
                     });
-                    // --- END Sentry ---
                 }
             });
 
-            campaign.status = successfulSends > 0 ? 'sent' : 'failed'; 
+            campaign.status = successfulSends > 0 ? 'sent' : 'failed';
             campaign.sentAt = new Date();
             await campaign.save();
 
@@ -142,10 +154,8 @@ const executeSendCampaign = async (campaignId) => {
 
         } catch (innerSendingError) {
             logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
-            // --- Sentry: Capture critical errors during sendPromises processing ---
             Sentry.captureException(innerSendingError);
-            // --- END Sentry ---
-            campaign.status = 'failed'; 
+            campaign.status = 'failed';
             await campaign.save();
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
             return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
@@ -153,26 +163,20 @@ const executeSendCampaign = async (campaignId) => {
 
     } catch (outerCriticalError) {
         logger.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
-        // --- Sentry: Capture any top-level critical errors in executeSendCampaign ---
         Sentry.captureException(outerCriticalError);
-        // --- END Sentry ---
-        try {
-            const currentCampaignState = await Campaign.findById(campaignId);
-            if (currentCampaignState && currentCampaignState.status === 'sending') {
-                 currentCampaignState.status = 'failed';
-                 await currentCampaignState.save();
-                 logger.log(`[Scheduler] Campaign ${campaignId} status reverted to 'failed' due to critical error.`);
-            } else if (currentCampaignState && currentCampaignState.status === 'scheduled') {
-                 currentCampaignState.status = 'failed';
-                 await currentCampaignState.save();
-                 logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' from 'scheduled' due to critical error.`);
+
+        // Always attempt to mark the campaign as 'failed' using findByIdAndUpdate
+        // This is robust as it doesn't rely on the 'campaign' object being loaded or having its .save() method.
+        if (campaignId) {
+            try {
+                await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
+                logger.log(`[Scheduler] Campaign ${campaignId} status updated to 'failed' due to critical error.`);
+            } catch (updateError) {
+                logger.error(`[Scheduler] Failed to update campaign status to 'failed' after critical error for ID ${campaignId}:`, updateError);
+                Sentry.captureException(updateError);
             }
-        } catch (dbError) {
-            logger.error(`[Scheduler] Failed to update campaign status after critical error:`, dbError);
-            // --- Sentry: Capture errors if DB update fails after a critical error ---
-            Sentry.captureException(dbError);
-            // --- END Sentry ---
         }
+
         return { success: false, message: `An unexpected critical error occurred: ${outerCriticalError.message}` };
     }
 };
@@ -203,17 +207,18 @@ const startCampaignScheduler = () => {
             logger.log(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
 
             for (const campaign of campaignsToSend) {
+                // Set campaign status to 'sending' before calling executeSendCampaign
+                // This prevents multiple cron jobs from picking up the same campaign
+                // if there's a slight delay.
                 campaign.status = 'sending';
                 await campaign.save();
                 logger.log(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
 
                 try {
-                    await exports.executeSendCampaign(campaign._id); 
+                    await exports.executeSendCampaign(campaign._id);
                 } catch (executionError) {
                     logger.error(`[Scheduler Error] Failed to execute send for campaign ID ${campaign._id}:`, executionError);
-                    // --- Sentry: Capture errors if executeSendCampaign fails to even start/complete ---
                     Sentry.captureException(executionError);
-                    // --- END Sentry ---
                     try {
                         const failedCampaign = await Campaign.findById(campaign._id);
                         if (failedCampaign) {
@@ -223,17 +228,13 @@ const startCampaignScheduler = () => {
                         }
                     } catch (dbUpdateError) {
                         logger.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
-                        // --- Sentry: Capture errors if DB update fails here too ---
                         Sentry.captureException(dbUpdateError);
-                        // --- END Sentry ---
                     }
                 }
             }
         } catch (error) {
             logger.error('[Scheduler Error] Error during scheduled campaign check:', error);
-            // --- Sentry: Capture top-level scheduler errors ---
             Sentry.captureException(error);
-            // --- END Sentry ---
         }
     });
 
