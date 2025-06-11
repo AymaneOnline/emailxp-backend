@@ -16,13 +16,13 @@ const { protect } = require('../middleware/authMiddleware');
 
 // Campaign Management Routes
 router.route('/')
-    .get(protect, getCampaigns)     // Get all campaigns for authenticated user
+    .get(protect, getCampaigns)      // Get all campaigns for authenticated user
     .post(protect, createCampaign); // Create a new campaign
 
 router.route('/:id')
-    .get(protect, getCampaignById)      // Get a single campaign by ID
-    .put(protect, updateCampaign)       // Update a campaign
-    .delete(protect, deleteCampaign);   // Delete a campaign
+    .get(protect, getCampaignById)     // Get a single campaign by ID
+    .put(protect, updateCampaign)      // Update a campaign
+    .delete(protect, deleteCampaign);  // Delete a campaign
 
 router.post('/:id/send', protect, sendCampaign); // POST request to trigger sending
 
