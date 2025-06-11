@@ -144,11 +144,29 @@ const startCampaignScheduler = () => {
             console.log(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
 
             for (const campaign of campaignsToSend) {
-                // Change status to 'sending' BEFORE initiating send, to prevent re-processing by next cron run
+                // Change status to 'sending' BEFORE initiating send
                 campaign.status = 'sending';
                 await campaign.save();
                 console.log(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
-                await executeSendCampaign(campaign._id);
+
+                // --- NEW: Add a try-catch directly around executeSendCampaign call ---
+                try {
+                    await exports.executeSendCampaign(campaign._id); // Use exports.executeSendCampaign
+                } catch (executionError) {
+                    console.error(`[Scheduler Error] Failed to execute send for campaign ID ${campaign._id}:`, executionError);
+                    // Attempt to set campaign status to 'failed' if an error occurs here
+                    try {
+                        const failedCampaign = await Campaign.findById(campaign._id);
+                        if (failedCampaign) {
+                            failedCampaign.status = 'failed';
+                            await failedCampaign.save();
+                            console.log(`[Scheduler] Campaign ${campaign._id} status set to 'failed' due to execution error.`);
+                        }
+                    } catch (dbUpdateError) {
+                        console.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
+                    }
+                }
+                // --- END NEW ---
             }
         } catch (error) {
             console.error('[Scheduler Error] Error during scheduled campaign check:', error);
