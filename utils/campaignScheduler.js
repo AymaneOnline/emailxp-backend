@@ -154,4 +154,5 @@ const startCampaignScheduler = () => {
     console.log('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.');
 };
 
+// --- NEW: Export the startCampaignScheduler function to be called in server.js ---
 module.exports.startCampaignScheduler = startCampaignScheduler;
