@@ -264,12 +264,6 @@ const getCampaignOpenStats = async (req, res) => {
 const getCampaignClickStats = asyncHandler(async (req, res) => {
     const campaignId = req.params.campaignId; 
 
-    // --- ADD THESE DIAGNOSTIC LOGS ---
-    console.log(`[BE Debug] getCampaignClickStats: Received campaignId: '${campaignId}'`);
-    console.log(`[BE Debug] getCampaignClickStats: campaignId length: ${campaignId.length}`);
-    console.log(`[BE Debug] getCampaignClickStats: isObjectIdValid(${campaignId})? ${mongoose.Types.ObjectId.isValid(campaignId)}`);
-    // --- END DIAGNOSTIC LOGS ---
-
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         console.error(`[BE Error] Invalid Campaign ID detected by isValid: '${campaignId}'`); // Log before throwing
         res.status(400);
@@ -292,7 +286,6 @@ const getCampaignClickStats = asyncHandler(async (req, res) => {
     const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
     const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
 
-    console.log(`[BE Debug] getCampaignClickStats: Found ${totalClicks} total clicks and ${uniqueClicks} unique clicks for ${campaignId}`);
     res.status(200).json({
         campaignId: campaignId,
         totalClicks,
