@@ -3,7 +3,7 @@
 const Template = require('../models/Template');
 const logger = require('../utils/logger');
 const Sentry = require('@sentry/node');
-const asyncHandler = require('express-async-handler'); // For simplifying async error handling
+const asyncHandler = require('express-async-handler');
 
 /**
  * @desc Create a new email template
@@ -42,7 +42,6 @@ const createTemplate = asyncHandler(async (req, res) => {
     } catch (error) {
         logger.error(`Error creating template: ${error.message}`, error);
         Sentry.captureException(error);
-        // The asyncHandler will catch and pass this error to your error handling middleware
         throw error;
     }
 });
@@ -68,8 +67,94 @@ const getTemplates = asyncHandler(async (req, res) => {
     }
 });
 
-// We'll add getTemplateById, updateTemplate, deleteTemplate later
+/**
+ * @desc Get a single email template by ID
+ * @route GET /api/templates/:id
+ * @access Private (e.g., admin/authenticated user)
+ */
+const getTemplate = asyncHandler(async (req, res) => {
+    const template = await Template.findById(req.params.id);
+
+    if (!template) {
+        res.status(404);
+        throw new Error('Template not found');
+    }
+
+    logger.info(`Fetched template with ID: ${req.params.id}`);
+    res.status(200).json(template);
+});
+
+/**
+ * @desc Update an email template
+ * @route PUT /api/templates/:id
+ * @access Private (e.g., admin/authenticated user)
+ */
+const updateTemplate = asyncHandler(async (req, res) => {
+    const { name, subject, htmlContent, plainTextContent } = req.body;
+
+    const template = await Template.findById(req.params.id);
+
+    if (!template) {
+        res.status(404);
+        throw new Error('Template not found');
+    }
+
+    // If a new name is provided, check for uniqueness (excluding the current template itself)
+    if (name && name !== template.name) {
+        const templateExists = await Template.findOne({ name });
+        if (templateExists) {
+            res.status(400);
+            throw new Error('A template with this name already exists');
+        }
+    }
+
+    // Update template fields
+    template.name = name || template.name;
+    template.subject = subject || template.subject;
+    template.htmlContent = htmlContent || template.htmlContent;
+    template.plainTextContent = plainTextContent !== undefined ? plainTextContent : template.plainTextContent; // Allow explicit empty string/null
+
+    // If you uncommented 'owner' in the model and use authentication, you might add checks here
+    // if (template.owner.toString() !== req.user.id) {
+    //     res.status(401);
+    //     throw new Error('Not authorized to update this template');
+    // }
+
+    const updatedTemplate = await template.save(); // Using .save() allows for pre/post hooks if you add them
+
+    logger.info(`Template with ID: ${req.params.id} updated successfully.`);
+    res.status(200).json(updatedTemplate);
+});
+
+/**
+ * @desc Delete an email template
+ * @route DELETE /api/templates/:id
+ * @access Private (e.g., admin/authenticated user)
+ */
+const deleteTemplate = asyncHandler(async (req, res) => {
+    const template = await Template.findById(req.params.id);
+
+    if (!template) {
+        res.status(404);
+        throw new Error('Template not found');
+    }
+
+    // If you uncommented 'owner' in the model and use authentication, you might add checks here
+    // if (template.owner.toString() !== req.user.id) {
+    //     res.status(401);
+    //     throw new Error('Not authorized to delete this template');
+    // }
+
+    await template.deleteOne(); // Mongoose 6+ prefers deleteOne() or deleteMany()
+
+    logger.info(`Template with ID: ${req.params.id} deleted successfully.`);
+    res.status(200).json({ message: 'Template removed successfully' });
+});
+
 module.exports = {
     createTemplate,
     getTemplates,
+    getTemplate, // Export new functions
+    updateTemplate,
+    deleteTemplate,
 };
