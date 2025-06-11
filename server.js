@@ -9,19 +9,19 @@ const { ProfilingIntegration } = require('@sentry/profiling-node');
 const SENTRY_DSN = process.env.SENTRY_DSN; // This will be undefined in dev if not set in .env
 
 Sentry.init({
-  dsn: SENTRY_DSN, // Use the DSN from environment variables
-  integrations: [
-    new ProfilingIntegration(),
-    // Add other Sentry integrations here if you are using Express middleware for tracing,
-    // like new Sentry.Integrations.Express({ app: app }), but `app` is not defined yet here.
-    // These should be added after `app` is defined and used with `app.use()`.
-  ],
-  // Adjust these values based on your needs and traffic:
-  tracesSampleRate: 0.1, // Sample 10% of transactions for performance monitoring
-  profilesSampleRate: 0.1, // Sample 10% of profiles for deeper performance insights
-  environment: process.env.NODE_ENV || 'development', // Automatically sets to 'production' if on Railway
-  // Enable Sentry debug logs only in non-production environments
-  debug: process.env.NODE_ENV !== 'production',
+    dsn: SENTRY_DSN, // Use the DSN from environment variables
+    integrations: [
+        new ProfilingIntegration(),
+        // Add other Sentry integrations here if you are using Express middleware for tracing,
+        // like new Sentry.Integrations.Express({ app: app }), but `app` is not defined yet here.
+        // These should be added after `app` is defined and used with `app.use()`.
+    ],
+    // Adjust these values based on your needs and traffic:
+    tracesSampleRate: 0.1, // Sample 10% of transactions for performance monitoring
+    profilesSampleRate: 0.1, // Sample 10% of profiles for deeper performance insights
+    environment: process.env.NODE_ENV || 'development', // Automatically sets to 'production' if on Railway
+    // Enable Sentry debug logs only in non-production environments
+    debug: process.env.NODE_ENV !== 'production',
 });
 
 // --- END Sentry Integration ---
@@ -36,6 +36,7 @@ const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
 const trackingRoutes = require('./routes/trackingRoutes');
+const templateRoutes = require('./routes/templateRoutes'); // <--- ADDED: Import template routes
 
 // --- ADDED: Import the campaign scheduler ---
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
@@ -73,6 +74,7 @@ app.use('/api/lists/:listId/subscribers', subscriberRoutes);
 // --- END NEW
 
 app.use('/api/track', trackingRoutes); // Existing new tracking routes
+app.use('/api/templates', templateRoutes); // <--- ADDED: Use template routes
 
 // --- Sentry error handler must come before any other error handling middleware ---
 // app.use(Sentry.Handlers.errorHandler());
