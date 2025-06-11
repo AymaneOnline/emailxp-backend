@@ -20,10 +20,11 @@ const subscriberSchema = mongoose.Schema(
             type: String,
             default: '', // Subscriber name can be optional
         },
+        // UPDATED FIELD: Using 'status' enum instead of a boolean
         status: {
             type: String,
             enum: ['subscribed', 'unsubscribed', 'bounced', 'complaint'], // Enum for possible statuses
-            default: 'subscribed',
+            default: 'subscribed', // New subscribers are 'subscribed' by default
         },
     },
     {
