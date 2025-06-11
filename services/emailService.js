@@ -1,6 +1,6 @@
 const sgMail = require('@sendgrid/mail');
 const cheerio = require('cheerio'); // A fast, flexible, and lean implementation of core jQuery specifically for the server.
-                                    // Install with: npm install cheerio
+                                     // Install with: npm install cheerio
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -18,6 +18,8 @@ const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-ba
  * @returns {string} The HTML content with rewritten URLs.
  */
 const rewriteUrlsForTracking = (htmlContent, campaignId, subscriberId) => {
+    // ADDED LOG: Confirm this function is being called
+    console.log(`[EmailService] Rewriting URLs for campaign: ${campaignId}, subscriber: ${subscriberId}`);
     const $ = cheerio.load(htmlContent); // Load HTML into Cheerio for easy parsing
 
     // Find all <a> tags
@@ -36,7 +38,7 @@ const rewriteUrlsForTracking = (htmlContent, campaignId, subscriberId) => {
 
             // Set the new href on the <a> tag
             $(element).attr('href', trackingUrl);
-            console.log(`Rewritten link from ${originalHref} to ${trackingUrl}`);
+            console.log(`[EmailService] Rewritten link from ${originalHref} to ${trackingUrl}`);
         }
     });
 
@@ -45,6 +47,9 @@ const rewriteUrlsForTracking = (htmlContent, campaignId, subscriberId) => {
 
 
 const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
+    // ADDED LOG: Log initial parameters before sending
+    console.log(`[EmailService] Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}`);
+
     // --- NEW: Rewrite URLs before sending ---
     let finalHtmlContent = htmlContent;
     if (campaignId && subscriberId) { // Only rewrite if tracking IDs are provided
@@ -69,14 +74,19 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         text: plainTextContent, // Plain text version for email clients that don't support HTML
     };
 
+    // ADDED LOG: Log the message object before sending (exclude API key)
+    console.log(`[EmailService] Message object prepared (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);
+
     try {
         await sgMail.send(msg);
-        console.log(`Email sent successfully to ${toEmail}`);
+        console.log(`[EmailService] Email sent successfully to ${toEmail}`);
         return { success: true, message: 'Email sent' };
     } catch (error) {
-        console.error(`Error sending email to ${toEmail}:`, error);
+        // UPDATED LOG: More descriptive FATAL ERROR log and ensure full error object is logged
+        console.error(`[EmailService] FATAL ERROR sending email to ${toEmail}:`, error); 
         if (error.response) {
-            console.error(error.response.body); // Log detailed SendGrid error
+            // UPDATED LOG: Ensure detailed SendGrid error response body is logged if available
+            console.error(`[EmailService] SendGrid detailed error response body:`, error.response.body); 
         }
         return { success: false, message: 'Failed to send email', error: error.message };
     }
