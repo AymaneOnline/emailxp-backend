@@ -4,8 +4,8 @@ const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const { sendEmail } = require('../services/emailService'); // Your email service (sendEmail function)
-const cheerio = require('cheerio'); // For HTML parsing in sendCampaign
+const { sendEmail } = require('../services/emailService');
+const cheerio = require('cheerio'); // Used for HTML parsing/manipulation
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 
@@ -43,17 +43,18 @@ const executeSendCampaign = async (campaignId) => {
         await campaign.save();
         console.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} subscribers.`);
 
-        const sendPromises = subscribers.map(async (subscriber) => {
-            let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-            const personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+        // --- NEW: Inner try-catch for the core sending logic ---
+        try {
+            const sendPromises = subscribers.map(async (subscriber) => {
+                let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                const personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
 
-            const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}/${campaign.list._id}`;
-            personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
-            personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
+                const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}/${campaign.list._id}`;
+                personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
+                personalizedPlain = `${personalizedPlain}\n\n---\nIf you noPlain longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
-            try {
-                // ADDED LOG: Log just before calling sendEmail to confirm execution reaches this point
-                console.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email} (Campaign: ${campaign._id})`);
+                // ADDED LOG: This is the critical log before calling sendEmail
+                console.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email} (Campaign: ${campaign._id}, Subscriber: ${subscriber._id})`);
                 
                 const result = await sendEmail(
                     subscriber.email,
@@ -65,51 +66,52 @@ const executeSendCampaign = async (campaignId) => {
                 );
                 // ADDED LOG: Log the result received back from sendEmail
                 console.log(`[Scheduler] sendEmail for ${subscriber.email} returned:`, result);
-                return result; // Return the result object directly for Promise.allSettled
-            } catch (emailError) {
-                // This catch block handles any synchronous errors within this map callback
-                // or rejections from the sendEmail promise itself.
-                console.error(`[Scheduler] Uncaught error while attempting to send email to ${subscriber.email} for campaign ${campaign._id}:`, emailError);
-                return { success: false, message: 'Uncaught error during email send.', error: emailError.message };
-            }
-        });
+                return result; 
+            });
 
-        const results = await Promise.allSettled(sendPromises); 
+            const results = await Promise.allSettled(sendPromises); 
 
-        let successfulSends = 0;
-        let failedSends = 0;
+            let successfulSends = 0;
+            let failedSends = 0;
 
-        // Iterate through results to correctly count successes and failures
-        results.forEach(outcome => {
-            if (outcome.status === 'fulfilled') {
-                if (outcome.value && outcome.value.success) {
-                    successfulSends++;
-                } else {
-                    // This covers cases where sendEmail returned success: false
+            results.forEach(outcome => {
+                if (outcome.status === 'fulfilled') {
+                    if (outcome.value && outcome.value.success) {
+                        successfulSends++;
+                    } else {
+                        failedSends++;
+                        const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
+                        const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
+                        console.error(`[Scheduler] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                    }
+                } else if (outcome.status === 'rejected') {
                     failedSends++;
-                    const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
-                    const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
-                    console.error(`[Scheduler] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                    console.error(`[Scheduler] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
                 }
-            } else if (outcome.status === 'rejected') {
-                // This covers cases where the promise itself was rejected (e.g., uncaught error in sendEmail)
-                failedSends++;
-                console.error(`[Scheduler] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
-            }
-        });
+            });
 
-        campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        campaign.sentAt = new Date();
-        await campaign.save();
+            campaign.status = successfulSends > 0 ? 'sent' : 'failed';
+            campaign.sentAt = new Date();
+            await campaign.save();
 
-        console.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
-        return { success: successfulSends > 0, message: 'Campaign sending completed.', totalSubscribers: subscribers.length, successfulSends, failedSends };
+            console.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
+            return { success: successfulSends > 0, message: 'Campaign sending completed.', totalSubscribers: subscribers.length, successfulSends, failedSends };
 
-    } catch (error) {
-        console.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, error);
+        } catch (innerSendingError) {
+            // This specific catch block will log errors that happen during the map/allSettled phase
+            console.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
+            // Ensure status is set to 'failed' if an error occurred during sending phase
+            campaign.status = 'failed';
+            await campaign.save();
+            console.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
+            return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
+        }
+
+    } catch (outerCriticalError) { // This is the original outer catch for general function errors
+        console.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
         try {
             const campaign = await Campaign.findById(campaignId);
-            if (campaign && campaign.status === 'sending') {
+            if (campaign && campaign.status === 'sending') { // Only try to update if still in 'sending' state
                  campaign.status = 'failed';
                  await campaign.save();
                  console.log(`[Scheduler] Campaign ${campaignId} status reverted to 'failed' due to critical error.`);
@@ -117,7 +119,7 @@ const executeSendCampaign = async (campaignId) => {
         } catch (dbError) {
             console.error(`[Scheduler] Failed to update campaign status after critical error:`, dbError);
         }
-        return { success: false, message: `An unexpected critical error occurred: ${error.message}` };
+        return { success: false, message: `An unexpected critical error occurred: ${outerCriticalError.message}` };
     }
 };
 
@@ -142,8 +144,10 @@ const startCampaignScheduler = () => {
             console.log(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
 
             for (const campaign of campaignsToSend) {
+                // Change status to 'sending' BEFORE initiating send, to prevent re-processing by next cron run
                 campaign.status = 'sending';
                 await campaign.save();
+                console.log(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
                 await executeSendCampaign(campaign._id);
             }
         } catch (error) {
@@ -154,5 +158,4 @@ const startCampaignScheduler = () => {
     console.log('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.');
 };
 
-// --- NEW: Export the startCampaignScheduler function to be called in server.js ---
 module.exports.startCampaignScheduler = startCampaignScheduler;
