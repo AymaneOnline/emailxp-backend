@@ -28,17 +28,31 @@ console.log('[Scheduler Init] All initial imports and global variables processed
 
 
 const executeSendCampaign = async (campaignId) => {
-    console.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`);
-    // This is the very first line of executable code within the function's body.
-    // If this doesn't appear after "Attempting to execute send...", the crash is extremely early.
+    console.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`); // From caller
     console.log(`[Scheduler] --- INSIDE executeSendCampaign for ID: ${campaignId} ---`); 
+
     try {
+        // --- NEW LOGS HERE ---
+        console.log(`[Scheduler] Step 1: About to call Campaign.findById(${campaignId}).`);
         const campaign = await Campaign.findById(campaignId).populate('list');
+        console.log(`[Scheduler] Step 2: Campaign.findById().populate('list') completed.`);
+        console.log(`[Scheduler] Retrieved Campaign ID: ${campaign ? campaign._id : 'null'}`);
+        console.log(`[Scheduler] Retrieved Campaign List ID: ${campaign && campaign.list ? campaign.list._id : 'null'}`);
+        // --- END NEW LOGS ---
 
         if (!campaign) {
             console.error(`[Scheduler Error] Campaign with ID ${campaignId} not found.`);
+            // Ensure status is set to 'failed' if not found
+            const campaignToFail = await Campaign.findById(campaignId);
+            if (campaignToFail && campaignToFail.status === 'sending') {
+                campaignToFail.status = 'failed';
+                await campaignToFail.save();
+                console.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' (not found).`);
+            }
             return { success: false, message: 'Campaign not found.' };
         }
+
+        console.log(`[Scheduler] Campaign status check: ${campaign.status}`);
 
         if (campaign.status === 'sent' || campaign.status === 'sending') {
             console.warn(`[Scheduler Warn] Campaign ${campaign.name} (ID: ${campaign._id}) has status '${campaign.status}'. Skipping send execution.`);
