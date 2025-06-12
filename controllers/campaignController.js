@@ -119,6 +119,7 @@ const updateCampaign = asyncHandler(async (req, res) => {
 
     const { list: listId, templateId, ...updateFields } = req.body;
 
+    // Handle list update
     if (listId) {
         const newList = await List.findById(listId);
         if (!newList || newList.user.toString() !== req.user.id) {
@@ -128,9 +129,13 @@ const updateCampaign = asyncHandler(async (req, res) => {
         campaign.list = listId;
     }
 
+    // Handle template update and apply content
     if (templateId !== undefined) {
         if (templateId === null || templateId === '') {
             campaign.template = null;
+            // When template is cleared, we expect subject/htmlContent/plainTextContent
+            // to be provided in updateFields if they should be updated.
+            // Otherwise, they will retain their old values or become empty.
         } else {
             const template = await Template.findById(templateId);
             if (!template) {
@@ -138,34 +143,60 @@ const updateCampaign = asyncHandler(async (req, res) => {
                 throw new Error('Selected template not found');
             }
             campaign.template = template._id;
+            // Override subject and content with template's content
             campaign.subject = template.subject;
             campaign.htmlContent = template.htmlContent;
             campaign.plainTextContent = template.plainTextContent || '';
         }
     }
 
+    // Apply other direct update fields (name, subject, htmlContent, plainTextContent)
+    // These ensure explicit user input or cleared template content takes precedence.
     if (updateFields.name !== undefined) campaign.name = updateFields.name;
-    if (updateFields.subject !== undefined) campaign.subject = updateFields.subject;
-    if (updateFields.htmlContent !== undefined) campaign.htmlContent = updateFields.htmlContent;
-    if (updateFields.plainTextContent !== undefined) campaign.plainTextContent = updateFields.plainTextContent;
-    
-    // Crucial: Handle status and scheduledAt updates correctly
+
+    // Only update subject/htmlContent/plainTextContent if they were explicitly sent
+    // or if the template was just cleared. This prevents template content from being
+    // overridden by stale data if a template was just applied.
+    if (templateId === null || templateId === '' || updateFields.subject !== undefined) {
+        campaign.subject = updateFields.subject !== undefined ? updateFields.subject : campaign.subject;
+    }
+    if (templateId === null || templateId === '' || updateFields.htmlContent !== undefined) {
+        campaign.htmlContent = updateFields.htmlContent !== undefined ? updateFields.htmlContent : campaign.htmlContent;
+    }
+    if (templateId === null || templateId === '' || updateFields.plainTextContent !== undefined) {
+        campaign.plainTextContent = updateFields.plainTextContent !== undefined ? updateFields.plainTextContent : campaign.plainTextContent;
+    }
+
+
+    // --- BEGIN CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
+    // Always update scheduledAt if provided in the request body
     if (updateFields.scheduledAt !== undefined) {
         campaign.scheduledAt = updateFields.scheduledAt;
     }
-    // If scheduledAt is set and is in the future, set status to 'scheduled'
-    // Otherwise, if scheduledAt is past/null, revert to 'draft' or keep existing if not 'scheduled'
-    // This logic ensures that if you edit a scheduled campaign to remove its schedule, it becomes a draft.
-    if (campaign.scheduledAt && new Date(campaign.scheduledAt) > new Date()) {
+
+    const now = new Date();
+    // Use the potentially updated `campaign.scheduledAt` for logic
+    const currentScheduledAt = campaign.scheduledAt ? new Date(campaign.scheduledAt) : null;
+
+    if (currentScheduledAt && currentScheduledAt > now) {
+        // If scheduledAt is set and is in the future, campaign MUST be 'scheduled'
         campaign.status = 'scheduled';
-    } else if (campaign.status === 'scheduled' && (!campaign.scheduledAt || new Date(campaign.scheduledAt) <= new Date())) {
+    } else if (campaign.status === 'scheduled' || campaign.status === 'draft') {
+        // If campaign was 'scheduled' (and now scheduledAt is past/null) or is 'draft',
+        // it should revert to 'draft'.
         campaign.status = 'draft';
-    } else if (updateFields.status !== undefined) {
-        // Only allow direct status update if it's not overridden by scheduling logic
-        // and if it's a valid transition (e.g., draft to sending).
-        // For simplicity, we'll allow it if explicitly provided, but scheduling logic takes precedence.
-        campaign.status = updateFields.status;
     }
+    // Important: For other states ('sent', 'sending', 'cancelled', 'failed'),
+    // we want them to persist unless explicitly changed by system or a valid manual action.
+    // The frontend only allows 'draft' to be manually changed, so this covers other cases.
+    // If updateFields.status is explicitly provided AND it's one of the non-scheduler-managed states,
+    // we apply it, but the scheduling logic takes precedence.
+    else if (updateFields.status !== undefined &&
+        !['scheduled', 'draft'].includes(updateFields.status) &&
+        !['sent', 'sending', 'cancelled', 'failed'].includes(campaign.status)) {
+        campaign.status = updateFields.status; // Apply explicit status if it's not a final state
+    }
+    // --- END CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
 
 
     const updatedCampaign = await campaign.save();
@@ -197,7 +228,7 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 // @desc    Manually send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
-const sendCampaignManually = asyncHandler(async (req, res) => { // Renamed from sendCampaign
+const sendCampaignManually = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
     const campaign = await Campaign.findById(campaignId);
@@ -213,7 +244,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => { // Renamed from 
     }
 
     // Allow manual send if campaign is 'draft' OR 'scheduled'
-    if (campaign.status === 'sent' || campaign.status === 'sending' || campaign.status === 'failed') {
+    if (campaign.status === 'sent' || campaign.status === 'sending' || campaign.status === 'failed' || campaign.status === 'cancelled') {
         res.status(400);
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
@@ -304,7 +335,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually, // <--- Renamed and exported as sendCampaignManually
+    sendCampaign: sendCampaignManually, // Export sendCampaignManually as sendCampaign for clarity
     getCampaignOpenStats,
     getCampaignClickStats,
 };
