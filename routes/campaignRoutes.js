@@ -9,7 +9,7 @@ const {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaignManually, // <--- Add this
+    sendCampaign, // <--- CHANGE THIS LINE: Import 'sendCampaign' as it's exported
     getCampaignOpenStats,
     getCampaignClickStats,
 } = require('../controllers/campaignController');
@@ -25,7 +25,8 @@ router.route('/:id')
     .delete(protect, deleteCampaign);
 
 // New route for manual campaign sending
-router.post('/:id/send', protect, sendCampaignManually); // <--- Add this route
+// Use 'sendCampaign' here as it's the imported alias
+router.post('/:id/send', protect, sendCampaign); // <--- CHANGE THIS LINE: Use the imported name
 
 // Routes for tracking statistics (already present from previous steps)
 router.get('/:id/opens', protect, getCampaignOpenStats);
