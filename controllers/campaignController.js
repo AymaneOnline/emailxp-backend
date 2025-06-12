@@ -4,8 +4,8 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent');
-const ClickEvent = require('../models/ClickEvent');
+const OpenEvent = require('../models/OpenEvent'); // Make sure OpenEvent model is correctly imported
+const ClickEvent = require('../models/ClickEvent'); // Make sure ClickEvent model is correctly imported
 const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
@@ -302,7 +302,6 @@ const getCampaignClickStats = asyncHandler(async (req, res) => {
     });
 });
 
-// --- NEW: Get Dashboard Analytics Statistics ---
 // @desc    Get aggregate dashboard statistics for the authenticated user
 // @route   GET /api/campaigns/dashboard-stats
 // @access  Private
@@ -345,6 +344,61 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     }
 });
 
+// --- NEW: Get detailed analytics for a specific campaign ---
+// @desc    Get detailed analytics for a specific campaign
+// @route   GET /api/campaigns/:id/analytics
+// @access  Private
+const getCampaignAnalytics = asyncHandler(async (req, res) => {
+    const { id: campaignId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        return res.status(400).json({ message: 'Invalid Campaign ID format.' });
+    }
+
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+        return res.status(404).json({ message: 'Campaign not found.' });
+    }
+
+    // Check authorization
+    if (campaign.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'Not authorized to view analytics for this campaign.' });
+    }
+
+    const totalEmailsSent = campaign.emailsSuccessfullySent || 0; // Use the stored count
+
+    // Fetch counts and distinct values from OpenEvent and ClickEvent collections
+    const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
+    const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+    const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
+    const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+    // Calculate rates, ensuring no division by zero
+    const openRate = totalEmailsSent > 0 ? ((uniqueOpens / totalEmailsSent) * 100).toFixed(2) : "0.00";
+    const clickRate = totalEmailsSent > 0 ? ((uniqueClicks / totalEmailsSent) * 100).toFixed(2) : "0.00";
+    // Click-Through Rate (CTR): unique clicks / unique opens
+    const clickThroughRate = uniqueOpens > 0 ? ((uniqueClicks / uniqueOpens) * 100).toFixed(2) : "0.00";
+
+    res.status(200).json({
+        campaignId: campaign._id,
+        campaignName: campaign.name,
+        subject: campaign.subject,
+        status: campaign.status,
+        sentAt: campaign.sentAt,
+        totalEmailsSent,
+        totalOpens,
+        uniqueOpens,
+        totalClicks,
+        uniqueClicks,
+        openRate,
+        clickRate,
+        clickThroughRate,
+    });
+});
+// --- END NEW ---
+
 module.exports = {
     getCampaigns,
     createCampaign,
@@ -354,5 +408,6 @@ module.exports = {
     sendCampaign: sendCampaignManually,
     getCampaignOpenStats,
     getCampaignClickStats,
-    getDashboardStats, // <--- ADDED: Export new dashboard stats function
+    getDashboardStats,
+    getCampaignAnalytics, // <--- ADDED: Export the new function
 };

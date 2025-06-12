@@ -12,15 +12,19 @@ const {
     sendCampaign,
     getCampaignOpenStats,
     getCampaignClickStats,
-    getDashboardStats, // Import new dashboard stats function
+    getDashboardStats,
+    getCampaignAnalytics, // <--- NEW IMPORT: Import the new function
 } = require('../controllers/campaignController');
 
 // All campaign routes are protected
 
 // --- IMPORTANT: Place more specific routes BEFORE more general ones ---
 
-// NEW ROUTE FOR DASHBOARD ANALYTICS - MUST BE BEFORE /:id
+// Dashboard Analytics (overall)
 router.get('/dashboard-stats', protect, getDashboardStats);
+
+// Campaign Specific Analytics - NEW ROUTE
+router.get('/:id/analytics', protect, getCampaignAnalytics); // <--- ADDED ROUTE: Placed before /:id
 
 router.route('/')
     .get(protect, getCampaigns)
@@ -34,7 +38,7 @@ router.route('/:id')
 // Route for manual campaign sending
 router.post('/:id/send', protect, sendCampaign);
 
-// Routes for tracking statistics
+// Routes for raw tracking statistics
 router.get('/:id/opens', protect, getCampaignOpenStats);
 router.get('/:id/clicks', protect, getCampaignClickStats);
 
