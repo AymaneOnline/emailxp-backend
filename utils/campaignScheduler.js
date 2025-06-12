@@ -30,7 +30,7 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const { sendEmail } = require('../services/emailService');
-const cheerio = require('cheerio'); // You might use this for more advanced HTML manipulation
+const cheerio = require('cheerio');
 
 // BACKEND_URL for unsubscribe links and click tracking
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
@@ -45,7 +45,7 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
  * @returns {object} An object indicating success/failure and relevant messages/stats.
  */
 const executeSendCampaign = async (campaignId) => {
-    let campaign; // Declare campaign here so it's accessible in catch block
+    let campaign;
     let successfulSends = 0;
     let failedSends = 0;
 
@@ -57,7 +57,6 @@ const executeSendCampaign = async (campaignId) => {
         if (!campaign) {
             logger.error(`[Scheduler Error] Campaign with ID ${campaignId} not found.`);
             Sentry.captureException(new Error(`Campaign with ID ${campaignId} not found during execution.`));
-            // If campaign is not found, attempt to mark it failed directly
             await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' (not found).`);
             return { success: false, message: 'Campaign not found.' };
@@ -65,28 +64,26 @@ const executeSendCampaign = async (campaignId) => {
 
         logger.log(`[Scheduler] Campaign status check: ${campaign.status}`);
 
-        // Prevent re-sending if already sent or if status isn't 'scheduled' or 'paused'
         if (campaign.status === 'sent' || campaign.status === 'failed') {
             logger.warn(`[Scheduler Warn] Campaign ${campaign.name} (ID: ${campaign._id}) has status '${campaign.status}'. Skipping re-send.`);
             return { success: false, message: `Campaign status is '${campaign.status}'. Cannot send.` };
         }
 
-        // Set campaign status to 'sending' before fetching subscribers
         campaign.status = 'sending';
         await campaign.save();
 
-        // --- CRITICAL UPDATE: Filter for 'subscribed' status ---
         const subscribers = await Subscriber.find({
             list: campaign.list._id,
-            status: 'subscribed' // ONLY fetch subscribers who are marked as 'subscribed'
+            status: 'subscribed'
         });
 
         if (subscribers.length === 0) {
             logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) has no 'subscribed' members in list ${campaign.list.name}.`);
-            campaign.status = 'sent'; // Mark as sent even if no active subscribers found
+            campaign.status = 'sent';
             campaign.sentAt = new Date();
+            campaign.emailsSuccessfullySent = 0; // Set to 0 if no subscribers to send to
             await campaign.save();
-            return { success: true, message: 'No active subscribers found for this campaign. Campaign marked as sent.' };
+            return { success: true, message: 'No active subscribers found for this campaign. Campaign marked as sent.', successfulSends: 0 };
         }
 
         logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} active subscribers.`);
@@ -95,15 +92,10 @@ const executeSendCampaign = async (campaignId) => {
             const sendPromises = subscribers.map(async (subscriber) => {
                 let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
                 let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                // Also personalize the subject if it contains placeholders
                 let personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
 
-                // --- GENERATE THE CORRECT UNSUBSCRIBE URL ---
-                // It should now point to the public unsubscribe route you set up in trackingRoutes.js
-                // Include campaignId as a query parameter for tracking
                 const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}?campaignId=${campaign._id}`;
 
-                // Append unsubscribe link to HTML and Plain text content
                 personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
                 personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
@@ -147,6 +139,7 @@ const executeSendCampaign = async (campaignId) => {
 
             campaign.status = successfulSends > 0 ? 'sent' : 'failed';
             campaign.sentAt = new Date();
+            campaign.emailsSuccessfullySent = successfulSends; // <--- ADDED: Update the new field
             await campaign.save();
 
             logger.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
@@ -156,6 +149,7 @@ const executeSendCampaign = async (campaignId) => {
             logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
             Sentry.captureException(innerSendingError);
             campaign.status = 'failed';
+            campaign.emailsSuccessfullySent = successfulSends; // Even on inner error, save current successful count
             await campaign.save();
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
             return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
@@ -167,7 +161,15 @@ const executeSendCampaign = async (campaignId) => {
 
         if (campaignId) {
             try {
-                await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
+                // Try to update status and any partial successful sends if campaign object was available
+                if (campaign) {
+                    campaign.status = 'failed';
+                    campaign.emailsSuccessfullySent = successfulSends;
+                    await campaign.save();
+                } else {
+                    // Fallback if campaign object itself wasn't found early on
+                    await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
+                }
                 logger.log(`[Scheduler] Campaign ${campaignId} status updated to 'failed' due to critical error.`);
             } catch (updateError) {
                 logger.error(`[Scheduler] Failed to update campaign status to 'failed' after critical error for ID ${campaignId}:`, updateError);
@@ -188,7 +190,7 @@ module.exports.executeSendCampaign = executeSendCampaign;
  */
 const startCampaignScheduler = () => {
     cron.schedule('* * * * *', async () => {
-        logger.warn('[Scheduler] Running scheduled campaign check...'); // <--- CHANGED FROM logger.log to logger.warn
+        logger.warn('[Scheduler] Running scheduled campaign check...');
         const now = new Date();
 
         try {
@@ -198,16 +200,16 @@ const startCampaignScheduler = () => {
             });
 
             if (campaignsToSend.length === 0) {
-                logger.warn('[Scheduler] No campaigns due for sending.'); // <--- CHANGED FROM logger.log to logger.warn
+                logger.warn('[Scheduler] No campaigns due for sending.');
                 return;
             }
 
-            logger.warn(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`); // <--- CHANGED FROM logger.log to logger.warn
+            logger.warn(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
 
             for (const campaign of campaignsToSend) {
                 campaign.status = 'sending';
                 await campaign.save();
-                logger.warn(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`); // <--- CHANGED FROM logger.log to logger.warn
+                logger.warn(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
 
                 try {
                     await exports.executeSendCampaign(campaign._id);
@@ -219,7 +221,7 @@ const startCampaignScheduler = () => {
                         if (failedCampaign) {
                             failedCampaign.status = 'failed';
                             await failedCampaign.save();
-                            logger.log(`[Scheduler] Campaign ${campaign._id} status set to 'failed' due to execution error.`); // Keep log for specific status change
+                            logger.log(`[Scheduler] Campaign ${campaign._id} status set to 'failed' due to execution error.`);
                         }
                     } catch (dbUpdateError) {
                         logger.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
@@ -233,7 +235,7 @@ const startCampaignScheduler = () => {
         }
     });
 
-    logger.warn('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.'); // <--- CHANGED FROM logger.log to logger.warn
+    logger.warn('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.');
 };
 
 module.exports.startCampaignScheduler = startCampaignScheduler;
