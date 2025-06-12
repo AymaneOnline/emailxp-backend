@@ -111,7 +111,7 @@ const executeSendCampaign = async (campaignId) => {
 
                 const result = await sendEmail(
                     subscriber.email,
-                    personalizedSubject, // Use personalized subject
+                    personalizedSubject,
                     personalizedHtml,
                     personalizedPlain,
                     campaign._id,
@@ -165,8 +165,6 @@ const executeSendCampaign = async (campaignId) => {
         logger.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
         Sentry.captureException(outerCriticalError);
 
-        // Always attempt to mark the campaign as 'failed' using findByIdAndUpdate
-        // This is robust as it doesn't rely on the 'campaign' object being loaded or having its .save() method.
         if (campaignId) {
             try {
                 await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
@@ -190,7 +188,7 @@ module.exports.executeSendCampaign = executeSendCampaign;
  */
 const startCampaignScheduler = () => {
     cron.schedule('* * * * *', async () => {
-        logger.log('[Scheduler] Running scheduled campaign check...');
+        logger.warn('[Scheduler] Running scheduled campaign check...'); // <--- CHANGED FROM logger.log to logger.warn
         const now = new Date();
 
         try {
@@ -200,19 +198,16 @@ const startCampaignScheduler = () => {
             });
 
             if (campaignsToSend.length === 0) {
-                logger.log('[Scheduler] No campaigns due for sending.');
+                logger.warn('[Scheduler] No campaigns due for sending.'); // <--- CHANGED FROM logger.log to logger.warn
                 return;
             }
 
-            logger.log(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`);
+            logger.warn(`[Scheduler] Found ${campaignsToSend.length} campaigns to send.`); // <--- CHANGED FROM logger.log to logger.warn
 
             for (const campaign of campaignsToSend) {
-                // Set campaign status to 'sending' before calling executeSendCampaign
-                // This prevents multiple cron jobs from picking up the same campaign
-                // if there's a slight delay.
                 campaign.status = 'sending';
                 await campaign.save();
-                logger.log(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`);
+                logger.warn(`[Scheduler] Processing campaign: ${campaign.name} (ID: ${campaign._id})`); // <--- CHANGED FROM logger.log to logger.warn
 
                 try {
                     await exports.executeSendCampaign(campaign._id);
@@ -224,7 +219,7 @@ const startCampaignScheduler = () => {
                         if (failedCampaign) {
                             failedCampaign.status = 'failed';
                             await failedCampaign.save();
-                            logger.log(`[Scheduler] Campaign ${campaign._id} status set to 'failed' due to execution error.`);
+                            logger.log(`[Scheduler] Campaign ${campaign._id} status set to 'failed' due to execution error.`); // Keep log for specific status change
                         }
                     } catch (dbUpdateError) {
                         logger.error(`[Scheduler] Failed to update status to 'failed' for campaign ${campaign._id}:`, dbUpdateError);
@@ -238,7 +233,7 @@ const startCampaignScheduler = () => {
         }
     });
 
-    logger.log('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.');
+    logger.warn('[Scheduler] Campaign scheduler started. Checking for campaigns every minute.'); // <--- CHANGED FROM logger.log to logger.warn
 };
 
 module.exports.startCampaignScheduler = startCampaignScheduler;
