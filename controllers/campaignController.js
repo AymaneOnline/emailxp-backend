@@ -271,52 +271,53 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 });
 
 // @desc    Get Open Statistics for a Specific Campaign
-// @route   GET /api/campaigns/:campaignId/opens
+// @route   GET /api/campaigns/:id/opens
 // @access  Private
 const getCampaignOpenStats = asyncHandler(async (req, res) => {
-    try {
-        const { campaignId } = req.params;
+    // Using 'id' for consistency with route definition (:id)
+    const { id: campaignId } = req.params; 
 
-        const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
-
-        if (!campaign) {
-            return res.status(404).json({ message: 'Campaign not found or unauthorized' });
-        }
-
-        const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
-        const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
-
-        res.json({
-            campaignId: campaignId,
-            totalOpens: totalOpens,
-            uniqueOpens: uniqueOpens,
-        });
-
-    } catch (error) {
-        console.error(`Error fetching open stats for campaign ${req.params.campaignId}:`, error);
-        res.status(500).json({ message: 'Server Error: Failed to fetch campaign open stats' });
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        return res.status(400).json({ message: 'Invalid Campaign ID format.' });
     }
+
+    const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
+
+    if (!campaign) {
+        // This covers cases where the ID is valid format, but no matching campaign for the user.
+        return res.status(404).json({ message: 'Campaign not found or unauthorized.' });
+    }
+
+    const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
+    const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+    res.status(200).json({
+        campaignId: campaignId,
+        totalOpens: totalOpens,
+        uniqueOpens: uniqueOpens,
+    });
 });
 
 // @desc    Get click statistics for a campaign
-// @route   GET /api/campaigns/:campaignId/clicks
+// @route   GET /api/campaigns/:id/clicks
 // @access  Private
 const getCampaignClickStats = asyncHandler(async (req, res) => {
-    const campaignId = req.params.campaignId;
+    // Using 'id' for consistency with route definition (:id)
+    const { id: campaignId } = req.params; 
 
+    // Always validate the ID format first
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
-        res.status(400);
-        throw new Error('Invalid Campaign ID');
+        return res.status(400).json({ message: 'Invalid Campaign ID format.' });
     }
 
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) {
-        res.status(404);
-        throw new Error('Campaign not found');
+        // If campaign not found with a valid ID, return 404.
+        return res.status(404).json({ message: 'Campaign not found.' });
     }
+    // Check for authorization after finding the campaign
     if (campaign.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to view stats for this campaign');
+        return res.status(401).json({ message: 'Not authorized to view stats for this campaign.' });
     }
 
     const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
