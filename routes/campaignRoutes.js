@@ -9,9 +9,10 @@ const {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign, // <--- CHANGE THIS LINE: Import 'sendCampaign' as it's exported
+    sendCampaign,
     getCampaignOpenStats,
     getCampaignClickStats,
+    getDashboardStats, // <--- ADDED: Import new dashboard stats function
 } = require('../controllers/campaignController');
 
 // All campaign routes are protected
@@ -24,13 +25,15 @@ router.route('/:id')
     .put(protect, updateCampaign)
     .delete(protect, deleteCampaign);
 
-// New route for manual campaign sending
-// Use 'sendCampaign' here as it's the imported alias
-router.post('/:id/send', protect, sendCampaign); // <--- CHANGE THIS LINE: Use the imported name
+// Route for manual campaign sending
+router.post('/:id/send', protect, sendCampaign);
 
-// Routes for tracking statistics (already present from previous steps)
+// Routes for tracking statistics
 router.get('/:id/opens', protect, getCampaignOpenStats);
 router.get('/:id/clicks', protect, getCampaignClickStats);
 
+// --- NEW ROUTE FOR DASHBOARD ANALYTICS ---
+router.get('/dashboard-stats', protect, getDashboardStats); // <--- ADDED ROUTE
+// --- END NEW ROUTE ---
 
 module.exports = router;

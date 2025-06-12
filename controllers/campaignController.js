@@ -133,9 +133,6 @@ const updateCampaign = asyncHandler(async (req, res) => {
     if (templateId !== undefined) {
         if (templateId === null || templateId === '') {
             campaign.template = null;
-            // When template is cleared, we expect subject/htmlContent/plainTextContent
-            // to be provided in updateFields if they should be updated.
-            // Otherwise, they will retain their old values or become empty.
         } else {
             const template = await Template.findById(templateId);
             if (!template) {
@@ -143,7 +140,6 @@ const updateCampaign = asyncHandler(async (req, res) => {
                 throw new Error('Selected template not found');
             }
             campaign.template = template._id;
-            // Override subject and content with template's content
             campaign.subject = template.subject;
             campaign.htmlContent = template.htmlContent;
             campaign.plainTextContent = template.plainTextContent || '';
@@ -151,12 +147,8 @@ const updateCampaign = asyncHandler(async (req, res) => {
     }
 
     // Apply other direct update fields (name, subject, htmlContent, plainTextContent)
-    // These ensure explicit user input or cleared template content takes precedence.
     if (updateFields.name !== undefined) campaign.name = updateFields.name;
 
-    // Only update subject/htmlContent/plainTextContent if they were explicitly sent
-    // or if the template was just cleared. This prevents template content from being
-    // overridden by stale data if a template was just applied.
     if (templateId === null || templateId === '' || updateFields.subject !== undefined) {
         campaign.subject = updateFields.subject !== undefined ? updateFields.subject : campaign.subject;
     }
@@ -168,36 +160,25 @@ const updateCampaign = asyncHandler(async (req, res) => {
     }
 
 
-    // --- BEGIN CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
-    // Always update scheduledAt if provided in the request body
+    // --- CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
     if (updateFields.scheduledAt !== undefined) {
         campaign.scheduledAt = updateFields.scheduledAt;
     }
 
     const now = new Date();
-    // Use the potentially updated `campaign.scheduledAt` for logic
     const currentScheduledAt = campaign.scheduledAt ? new Date(campaign.scheduledAt) : null;
 
     if (currentScheduledAt && currentScheduledAt > now) {
-        // If scheduledAt is set and is in the future, campaign MUST be 'scheduled'
         campaign.status = 'scheduled';
     } else if (campaign.status === 'scheduled' || campaign.status === 'draft') {
-        // If campaign was 'scheduled' (and now scheduledAt is past/null) or is 'draft',
-        // it should revert to 'draft'.
         campaign.status = 'draft';
     }
-    // Important: For other states ('sent', 'sending', 'cancelled', 'failed'),
-    // we want them to persist unless explicitly changed by system or a valid manual action.
-    // The frontend only allows 'draft' to be manually changed, so this covers other cases.
-    // If updateFields.status is explicitly provided AND it's one of the non-scheduler-managed states,
-    // we apply it, but the scheduling logic takes precedence.
     else if (updateFields.status !== undefined &&
         !['scheduled', 'draft'].includes(updateFields.status) &&
         !['sent', 'sending', 'cancelled', 'failed'].includes(campaign.status)) {
-        campaign.status = updateFields.status; // Apply explicit status if it's not a final state
+        campaign.status = updateFields.status;
     }
     // --- END CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
-
 
     const updatedCampaign = await campaign.save();
 
@@ -243,17 +224,14 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to send this campaign');
     }
 
-    // Allow manual send if campaign is 'draft' OR 'scheduled'
     if (campaign.status === 'sent' || campaign.status === 'sending' || campaign.status === 'failed' || campaign.status === 'cancelled') {
         res.status(400);
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
-    // Set campaign status to 'sending' immediately to prevent race conditions
     campaign.status = 'sending';
     await campaign.save();
 
-    // Call the core sending logic
     const sendResult = await executeSendCampaign(campaignId);
 
     if (sendResult.success) {
@@ -274,8 +252,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/opens
 // @access  Private
 const getCampaignOpenStats = asyncHandler(async (req, res) => {
-    // Using 'id' for consistency with route definition (:id)
-    const { id: campaignId } = req.params; 
+    const { id: campaignId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         return res.status(400).json({ message: 'Invalid Campaign ID format.' });
@@ -284,7 +261,6 @@ const getCampaignOpenStats = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
 
     if (!campaign) {
-        // This covers cases where the ID is valid format, but no matching campaign for the user.
         return res.status(404).json({ message: 'Campaign not found or unauthorized.' });
     }
 
@@ -302,20 +278,16 @@ const getCampaignOpenStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/clicks
 // @access  Private
 const getCampaignClickStats = asyncHandler(async (req, res) => {
-    // Using 'id' for consistency with route definition (:id)
-    const { id: campaignId } = req.params; 
+    const { id: campaignId } = req.params;
 
-    // Always validate the ID format first
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         return res.status(400).json({ message: 'Invalid Campaign ID format.' });
     }
 
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) {
-        // If campaign not found with a valid ID, return 404.
         return res.status(404).json({ message: 'Campaign not found.' });
     }
-    // Check for authorization after finding the campaign
     if (campaign.user.toString() !== req.user.id) {
         return res.status(401).json({ message: 'Not authorized to view stats for this campaign.' });
     }
@@ -330,13 +302,57 @@ const getCampaignClickStats = asyncHandler(async (req, res) => {
     });
 });
 
+// --- NEW: Get Dashboard Analytics Statistics ---
+// @desc    Get aggregate dashboard statistics for the authenticated user
+// @route   GET /api/campaigns/dashboard-stats
+// @access  Private
+const getDashboardStats = asyncHandler(async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // 1. Total Campaigns Sent
+        const totalCampaignsSent = await Campaign.countDocuments({
+            user: userId,
+            status: 'sent'
+        });
+
+        // 2. Total Emails Sent (accurate by summing 'emailsSuccessfullySent' from Campaign model)
+        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSuccessfullySent').lean();
+        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSuccessfullySent || 0), 0);
+
+        // 3. Overall Unique Opens
+        const totalUniqueOpens = (await OpenEvent.distinct('subscriber', { user: userId })).length;
+
+        // 4. Overall Unique Clicks
+        const totalUniqueClicks = (await ClickEvent.distinct('subscriber', { user: userId })).length;
+
+        // Calculate rates
+        const overallOpenRate = totalEmailsSent > 0 ? ((totalUniqueOpens / totalEmailsSent) * 100).toFixed(2) : '0.00';
+        const overallClickRate = totalEmailsSent > 0 ? ((totalUniqueClicks / totalEmailsSent) * 100).toFixed(2) : '0.00';
+
+        res.status(200).json({
+            totalCampaignsSent,
+            totalEmailsSent,
+            totalUniqueOpens,
+            totalUniqueClicks,
+            overallOpenRate,
+            overallClickRate,
+        });
+
+    } catch (error) {
+        console.error('Error fetching dashboard stats:', error);
+        res.status(500).json({ message: 'Server Error: Failed to fetch dashboard statistics' });
+    }
+});
+
 module.exports = {
     getCampaigns,
     createCampaign,
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually, // Export sendCampaignManually as sendCampaign for clarity
+    sendCampaign: sendCampaignManually,
     getCampaignOpenStats,
     getCampaignClickStats,
+    getDashboardStats, // <--- ADDED: Export new dashboard stats function
 };

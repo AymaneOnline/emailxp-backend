@@ -1,4 +1,4 @@
-// In emailxp/backend/models/Campaign.js
+// emailxp/backend/models/Campaign.js
 
 const mongoose = require('mongoose');
 
@@ -34,45 +34,46 @@ const campaignSchema = mongoose.Schema(
         },
         status: {
             type: String,
-            enum: ['draft', 'scheduled', 'sending', 'sent', 'cancelled', 'failed'], // <-- 'failed' added here
+            enum: ['draft', 'scheduled', 'sending', 'sent', 'cancelled', 'failed'],
             default: 'draft',
         },
         scheduledAt: {
             type: Date,
             default: null,
         },
-        sentAt: { // Timestamp when the campaign was actually marked 'sent'
+        sentAt: {
             type: Date,
             default: null,
         },
-        // --- NEW: Link to Template Model ---
         template: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Template',
-            default: null, // This campaign can be created without a template
+            default: null,
         },
-        // --- END NEW ---
+        // --- NEW FIELD: To store the count of successfully sent emails for a campaign ---
+        emailsSuccessfullySent: {
+            type: Number,
+            default: 0,
+        },
+        // --- END NEW FIELD ---
     },
     {
         timestamps: true,
     }
 );
 
-// --- NEW: Add a pre-delete hook to cascade delete related events ---
+// --- Pre-delete hook to cascade delete related events ---
 campaignSchema.pre('deleteOne', { document: true, query: false }, async function(next) {
-    // 'this' refers to the document being deleted
     console.log(`[Mongoose Pre-Delete] Deleting associated OpenEvent and ClickEvent documents for Campaign: ${this._id}`);
-    
-    // Import your event models here if not already imported globally
-    const OpenEvent = mongoose.model('OpenEvent'); // Get the model instance
-    const ClickEvent = mongoose.model('ClickEvent'); // Get the model instance
+
+    const OpenEvent = mongoose.model('OpenEvent');
+    const ClickEvent = mongoose.model('ClickEvent');
 
     await OpenEvent.deleteMany({ campaign: this._id });
     await ClickEvent.deleteMany({ campaign: this._id });
 
     console.log(`[Mongoose Pre-Delete] Associated events deleted for Campaign: ${this._id}`);
-    next(); // Continue with the campaign deletion
+    next();
 });
-// --- END NEW ---
 
 module.exports = mongoose.model('Campaign', campaignSchema);
