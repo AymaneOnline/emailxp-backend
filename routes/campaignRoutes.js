@@ -2,35 +2,34 @@
 
 const express = require('express');
 const router = express.Router();
+const { protect } = require('../middleware/authMiddleware');
 const {
     getCampaigns,
     createCampaign,
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign,
+    sendCampaignManually, // <--- Add this
     getCampaignOpenStats,
-    getCampaignClickStats, // Ensure this is imported from your controller
+    getCampaignClickStats,
 } = require('../controllers/campaignController');
-const { protect } = require('../middleware/authMiddleware');
 
-// Campaign Management Routes
+// All campaign routes are protected
 router.route('/')
-    .get(protect, getCampaigns)      // Get all campaigns for authenticated user
-    .post(protect, createCampaign); // Create a new campaign
+    .get(protect, getCampaigns)
+    .post(protect, createCampaign);
 
 router.route('/:id')
-    .get(protect, getCampaignById)     // Get a single campaign by ID
-    .put(protect, updateCampaign)      // Update a campaign
-    .delete(protect, deleteCampaign);  // Delete a campaign
+    .get(protect, getCampaignById)
+    .put(protect, updateCampaign)
+    .delete(protect, deleteCampaign);
 
-router.post('/:id/send', protect, sendCampaign); // POST request to trigger sending
+// New route for manual campaign sending
+router.post('/:id/send', protect, sendCampaignManually); // <--- Add this route
 
-router.get('/:campaignId/opens', protect, getCampaignOpenStats); // Route for Open Stats
+// Routes for tracking statistics (already present from previous steps)
+router.get('/:id/opens', protect, getCampaignOpenStats);
+router.get('/:id/clicks', protect, getCampaignClickStats);
 
-// --- NEW ROUTE: Get Click Stats for a specific campaign ---
-// Note: Frontend uses '/api/campaigns/:campaignId/clicks'
-// This matches your frontend's `getCampaignClickStats` in `campaignService.js`
-router.get('/:campaignId/clicks', protect, getCampaignClickStats);
 
 module.exports = router;

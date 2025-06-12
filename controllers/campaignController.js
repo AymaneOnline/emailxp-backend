@@ -4,9 +4,9 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent'); // Import OpenEvent model for tracking opens
+const OpenEvent = require('../models/OpenEvent');
 const ClickEvent = require('../models/ClickEvent');
-const Template = require('../models/Template'); // <--- NEW: Import Template Model
+const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
 
@@ -16,10 +16,9 @@ const { executeSendCampaign } = require('../utils/campaignScheduler');
 // @route   GET /api/campaigns
 // @access  Private
 const getCampaigns = asyncHandler(async (req, res) => {
-    // Populate 'list' for list name and 'template' for template details
     const campaigns = await Campaign.find({ user: req.user.id })
         .populate('list', 'name')
-        .populate('template', 'name subject'); // <--- UPDATED: Populate template name and subject
+        .populate('template', 'name subject');
     res.status(200).json(campaigns);
 });
 
@@ -27,10 +26,9 @@ const getCampaigns = asyncHandler(async (req, res) => {
 // @route   POST /api/campaigns
 // @access  Private
 const createCampaign = asyncHandler(async (req, res) => {
-    // --- UPDATED: Accept templateId in request body ---
     const { name, subject, htmlContent, plainTextContent, list: listId, status, scheduledAt, templateId } = req.body;
 
-    if (!name || !listId) { // htmlContent and subject might come from template, so make them not required here.
+    if (!name || !listId) {
         res.status(400);
         throw new Error('Please include campaign name and target list.');
     }
@@ -50,7 +48,6 @@ const createCampaign = asyncHandler(async (req, res) => {
     let finalPlainTextContent = plainTextContent;
     let usedTemplateId = null;
 
-    // If templateId is provided, fetch template content
     if (templateId) {
         const template = await Template.findById(templateId);
         if (!template) {
@@ -61,11 +58,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         finalSubject = template.subject;
         finalHtmlContent = template.htmlContent;
         finalPlainTextContent = template.plainTextContent || '';
-        // If the user provided subject/content in the request *along with* a templateId,
-        // you might decide whether to override template content with user-provided,
-        // or prioritize template. For now, template takes precedence if templateId is present.
     } else {
-        // If no templateId, then htmlContent and subject are required from the request body
         if (!subject || !htmlContent) {
             res.status(400);
             throw new Error('Please provide subject and HTML content for the campaign, or select a template.');
@@ -76,12 +69,12 @@ const createCampaign = asyncHandler(async (req, res) => {
         user: req.user.id,
         list: listId,
         name,
-        subject: finalSubject,         // <--- UPDATED
-        htmlContent: finalHtmlContent, // <--- UPDATED
-        plainTextContent: finalPlainTextContent, // <--- UPDATED
+        subject: finalSubject,
+        htmlContent: finalHtmlContent,
+        plainTextContent: finalPlainTextContent,
         status: status || 'draft',
         scheduledAt: scheduledAt || null,
-        template: usedTemplateId,      // <--- NEW: Store the template ID
+        template: usedTemplateId,
     });
 
     res.status(201).json(campaign);
@@ -91,10 +84,9 @@ const createCampaign = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id
 // @access  Private
 const getCampaignById = asyncHandler(async (req, res) => {
-    // --- UPDATED: Populate 'template' field to retrieve its details ---
     const campaign = await Campaign.findById(req.params.id)
         .populate('list', 'name')
-        .populate('template', 'name subject htmlContent plainTextContent'); // <--- UPDATED: Populate all relevant template fields
+        .populate('template', 'name subject htmlContent plainTextContent');
 
     if (!campaign) {
         res.status(404);
@@ -125,10 +117,8 @@ const updateCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to update this campaign');
     }
 
-    // --- UPDATED: Handle templateId in update ---
     const { list: listId, templateId, ...updateFields } = req.body;
 
-    // Validate and update list if provided
     if (listId) {
         const newList = await List.findById(listId);
         if (!newList || newList.user.toString() !== req.user.id) {
@@ -138,12 +128,9 @@ const updateCampaign = asyncHandler(async (req, res) => {
         campaign.list = listId;
     }
 
-    // If templateId is provided, fetch its content and override campaign content
-    if (templateId !== undefined) { // Check if templateId was explicitly passed (can be null for no template)
-        if (templateId === null || templateId === '') { // User wants to clear template association
+    if (templateId !== undefined) {
+        if (templateId === null || templateId === '') {
             campaign.template = null;
-            // You might want to clear htmlContent/plainTextContent here or keep them as is
-            // For now, let's assume if templateId is null, content must be provided in updateFields
         } else {
             const template = await Template.findById(templateId);
             if (!template) {
@@ -151,29 +138,40 @@ const updateCampaign = asyncHandler(async (req, res) => {
                 throw new Error('Selected template not found');
             }
             campaign.template = template._id;
-            // Override subject and content with template's content
             campaign.subject = template.subject;
             campaign.htmlContent = template.htmlContent;
             campaign.plainTextContent = template.plainTextContent || '';
         }
     }
 
-    // Apply other direct update fields (name, subject, htmlContent, plainTextContent, status, scheduledAt)
-    // These will override template content if templateId was just cleared (templateId === null)
-    // or if the user explicitly provided them even with a template.
-    // This logic ensures fields from template are populated, but can then be individually overridden.
     if (updateFields.name !== undefined) campaign.name = updateFields.name;
     if (updateFields.subject !== undefined) campaign.subject = updateFields.subject;
     if (updateFields.htmlContent !== undefined) campaign.htmlContent = updateFields.htmlContent;
     if (updateFields.plainTextContent !== undefined) campaign.plainTextContent = updateFields.plainTextContent;
-    if (updateFields.status !== undefined) campaign.status = updateFields.status;
-    if (updateFields.scheduledAt !== undefined) campaign.scheduledAt = updateFields.scheduledAt;
+    
+    // Crucial: Handle status and scheduledAt updates correctly
+    if (updateFields.scheduledAt !== undefined) {
+        campaign.scheduledAt = updateFields.scheduledAt;
+    }
+    // If scheduledAt is set and is in the future, set status to 'scheduled'
+    // Otherwise, if scheduledAt is past/null, revert to 'draft' or keep existing if not 'scheduled'
+    // This logic ensures that if you edit a scheduled campaign to remove its schedule, it becomes a draft.
+    if (campaign.scheduledAt && new Date(campaign.scheduledAt) > new Date()) {
+        campaign.status = 'scheduled';
+    } else if (campaign.status === 'scheduled' && (!campaign.scheduledAt || new Date(campaign.scheduledAt) <= new Date())) {
+        campaign.status = 'draft';
+    } else if (updateFields.status !== undefined) {
+        // Only allow direct status update if it's not overridden by scheduling logic
+        // and if it's a valid transition (e.g., draft to sending).
+        // For simplicity, we'll allow it if explicitly provided, but scheduling logic takes precedence.
+        campaign.status = updateFields.status;
+    }
 
-    const updatedCampaign = await campaign.save(); // Use save() as we're modifying the document directly
+
+    const updatedCampaign = await campaign.save();
 
     res.status(200).json(updatedCampaign);
 });
-
 
 // @desc    Delete a campaign
 // @route   DELETE /api/campaigns/:id
@@ -191,15 +189,15 @@ const deleteCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to delete this campaign');
     }
 
-    await campaign.deleteOne(); // This will trigger the pre-delete hook in the Campaign model
+    await campaign.deleteOne();
 
     res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
 });
 
-// @desc    Send a campaign to its associated list subscribers immediately
+// @desc    Manually send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
-const sendCampaign = asyncHandler(async (req, res) => {
+const sendCampaignManually = asyncHandler(async (req, res) => { // Renamed from sendCampaign
     const campaignId = req.params.id;
 
     const campaign = await Campaign.findById(campaignId);
@@ -214,11 +212,17 @@ const sendCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to send this campaign');
     }
 
-    if (campaign.status !== 'draft') {
+    // Allow manual send if campaign is 'draft' OR 'scheduled'
+    if (campaign.status === 'sent' || campaign.status === 'sending' || campaign.status === 'failed') {
         res.status(400);
-        throw new Error(`Campaign status is '${campaign.status}'. Only 'draft' campaigns can be sent immediately. Scheduled campaigns are handled by the scheduler.`);
+        throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
+    // Set campaign status to 'sending' immediately to prevent race conditions
+    campaign.status = 'sending';
+    await campaign.save();
+
+    // Call the core sending logic
     const sendResult = await executeSendCampaign(campaignId);
 
     if (sendResult.success) {
@@ -238,7 +242,7 @@ const sendCampaign = asyncHandler(async (req, res) => {
 // @desc    Get Open Statistics for a Specific Campaign
 // @route   GET /api/campaigns/:campaignId/opens
 // @access  Private
-const getCampaignOpenStats = asyncHandler(async (req, res) => { 
+const getCampaignOpenStats = asyncHandler(async (req, res) => {
     try {
         const { campaignId } = req.params;
 
@@ -267,7 +271,7 @@ const getCampaignOpenStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:campaignId/clicks
 // @access  Private
 const getCampaignClickStats = asyncHandler(async (req, res) => {
-    const campaignId = req.params.campaignId; 
+    const campaignId = req.params.campaignId;
 
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         res.status(400);
@@ -300,7 +304,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign,
+    sendCampaign: sendCampaignManually, // <--- Renamed and exported as sendCampaignManually
     getCampaignOpenStats,
     getCampaignClickStats,
 };
