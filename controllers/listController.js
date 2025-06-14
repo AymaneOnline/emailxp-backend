@@ -6,7 +6,10 @@ const Subscriber = require('../models/Subscriber'); // Also need Subscriber mode
 // @route   GET /api/lists
 // @access  Private
 const getLists = asyncHandler(async (req, res) => {
-    const lists = await List.find({ user: req.user.id }); // Fetch lists owned by the authenticated user
+    // --- START MODIFICATION ---
+    const lists = await List.find({ user: req.user.id })
+                            .populate('subscribers'); // <-- ADD THIS LINE
+    // --- END MODIFICATION ---
     res.status(200).json(lists);
 });
 
@@ -41,7 +44,10 @@ const createList = asyncHandler(async (req, res) => {
 // @route   GET /api/lists/:id
 // @access  Private
 const getListById = asyncHandler(async (req, res) => {
-    const list = await List.findById(req.params.id);
+    // --- OPTIONAL MODIFICATION: Also populate subscribers here if you ever fetch a single list by ID ---
+    const list = await List.findById(req.params.id)
+                            .populate('subscribers'); // <-- Consider adding this line here too
+    // --- END OPTIONAL MODIFICATION ---
 
     if (!list) {
         res.status(404);

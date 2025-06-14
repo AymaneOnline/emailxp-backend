@@ -4,16 +4,16 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent'); // Make sure OpenEvent model is correctly imported
-const ClickEvent = require('../models/ClickEvent'); // Make sure ClickEvent model is correctly imported
+const OpenEvent = require('../models/OpenEvent');
+const ClickEvent = require('../models/ClickEvent');
 const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
 
 const { executeSendCampaign } = require('../utils/campaignScheduler');
 
-const sgMail = require('@sendgrid/mail'); // <--- NEW: Import SendGrid Mail
-sgMail.setApiKey(process.env.SENDGRID_API_KEY); // <--- NEW: Set SendGrid API Key from environment variable
+const sgMail = require('@sendgrid/mail');
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -232,24 +232,32 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
-    // Get subscribers from the associated list
+    // --- DEBUGGING LOGS START HERE ---
+    console.log(`[DEBUG] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
+    console.log(`[DEBUG] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
+
+    // Get subscribers from the associated list with status 'subscribed'
     const subscribers = await Subscriber.find({ list: campaign.list._id, status: 'subscribed' });
+
+    console.log(`[DEBUG] Found ${subscribers.length} subscribers with status 'subscribed' for list ID: ${campaign.list._id}`);
+    if (subscribers.length > 0) {
+        console.log('[DEBUG] First subscriber found:', subscribers[0].email, 'Status:', subscribers[0].status);
+        console.log('[DEBUG] All found subscribers:', subscribers.map(s => ({ email: s.email, status: s.status, id: s._id })));
+    }
+    // --- DEBUGGING LOGS END HERE ---
 
     if (subscribers.length === 0) {
         res.status(400);
-        throw new Error('No active subscribers found in the target list to send the campaign to.');
+        throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
     }
 
     campaign.status = 'sending';
-    campaign.lastSentAt = new Date(); // Record when sending started
-    campaign.totalRecipients = subscribers.length; // Set total recipients
+    campaign.lastSentAt = new Date();
+    campaign.totalRecipients = subscribers.length;
     await campaign.save();
 
     let successfulSends = 0;
     const messages = subscribers.map(subscriber => {
-        // --- IMPORTANT: ADD CUSTOM_ARGS FOR WEBHOOK TRACKING ---
-        // These custom_args will be included in the SendGrid webhook event payload
-        // This is how you link a webhook event back to a specific campaign in your DB
         const customArgs = {
             campaign_id: campaignId.toString(),
             subscriber_id: subscriber._id.toString(),
@@ -258,13 +266,11 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 
         return {
             to: subscriber.email,
-            from: process.env.SENDGRID_SENDER_EMAIL, // Ensure this is set in your .env
+            from: process.env.SENDGRID_SENDER_EMAIL,
             subject: campaign.subject,
             html: campaign.htmlContent,
             text: campaign.plainTextContent || '',
-            // Add custom arguments to the email
             custom_args: customArgs,
-            // Enable click tracking (already likely enabled in SendGrid settings, but good to be explicit)
             trackingSettings: {
                 clickTracking: {
                     enable: true,
@@ -282,9 +288,9 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         console.log('SendGrid API Response:', response.statusCode);
 
         if (response.statusCode >= 200 && response.statusCode < 300) {
-            successfulSends = messages.length; // Assume all were accepted by SendGrid API
+            successfulSends = messages.length;
             campaign.status = 'sent';
-            campaign.emailsSent = successfulSends; // Update emailsSent count
+            campaign.emailsSent = successfulSends;
             await campaign.save();
             res.status(200).json({
                 message: 'Campaign sending initiated successfully!',
@@ -385,21 +391,21 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 
         // 3. Overall Unique Opens (from Campaign model aggregate)
         const totalUniqueOpens = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // Match campaigns for the user
-            { $group: { _id: null, total: { $sum: "$opens" } } } // Sum the 'opens' field from Campaign model
+            { $match: { user: new mongoose.Types.ObjectId(userId) } },
+            { $group: { _id: null, total: { $sum: "$opens" } } }
         ]))[0]?.total || 0;
 
 
         // 4. Overall Unique Clicks (from Campaign model aggregate)
         const totalUniqueClicks = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // Match campaigns for the user
-            { $group: { _id: null, total: { $sum: "$clicks" } } } // Sum the 'clicks' field from Campaign model
+            { $match: { user: new mongoose.Types.ObjectId(userId) } },
+            { $group: { _id: null, total: { $sum: "$clicks" } } }
         ]))[0]?.total || 0;
 
 
         // --- NEW: Include bounced, unsubscribed, complaint counts in dashboard stats ---
         const totalBounced = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // No status filter here, count bounces regardless if campaign is 'sent'
+            { $match: { user: new mongoose.Types.ObjectId(userId) } },
             { $group: { _id: null, total: { $sum: "$bouncedCount" } } }
         ]))[0]?.total || 0;
 
@@ -504,7 +510,6 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 // @route   POST /api/campaigns/webhooks/sendgrid
 // @access  Public (called by SendGrid)
 const handleSendGridWebhook = asyncHandler(async (req, res) => {
-    // SendGrid sends an array of event objects
     const events = req.body;
     console.log(`[Webhook] Received SendGrid events: ${events.length} events`);
 
@@ -512,23 +517,19 @@ const handleSendGridWebhook = asyncHandler(async (req, res) => {
         try {
             const email = event.email;
             const eventType = event.event;
-            // SendGrid custom_args payload comes as an object, extract from it
-            // Ensure these match the keys sent in custom_args in sendCampaignManually
             const campaignId = event.campaign_id;
             const subscriberId = event.subscriber_id;
             const listId = event.list_id;
 
             console.log(`[Webhook] Processing event: ${eventType} for ${email}, Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}`);
 
-            // Find the subscriber using subscriberId and listId for precision
             const subscriber = await Subscriber.findOne({ _id: subscriberId, list: listId });
 
             if (!subscriber) {
                 console.log(`[Webhook] Subscriber with ID ${subscriberId} not found for list ${listId}. Skipping event.`);
-                continue; // Skip to the next event
+                continue;
             }
 
-            // Find the campaign (if campaignId is available and valid)
             let campaign = null;
             if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
                 campaign = await Campaign.findById(campaignId);
@@ -553,22 +554,16 @@ const handleSendGridWebhook = asyncHandler(async (req, res) => {
                     console.log(`[Webhook] Subscriber ${email} marked as unsubscribed.`);
                     break;
                 case 'click':
-                    // These fields should be incremented via the webhook to stay real-time
                     if (campaign) campaign.clicks = (campaign.clicks || 0) + 1;
-                    // You might also want to log ClickEvent here if you were not previously doing so via middleware
                     console.log(`[Webhook] Subscriber ${email} clicked.`);
                     break;
                 case 'open':
-                    // These fields should be incremented via the webhook to stay real-time
                     if (campaign) campaign.opens = (campaign.opens || 0) + 1;
-                    // You might also want to log OpenEvent here if you were not previously doing so via middleware
                     console.log(`[Webhook] Subscriber ${email} opened.`);
                     break;
                 case 'delivered':
-                    // You could track delivery count here if needed
                     console.log(`[Webhook] Email to ${email} delivered.`);
                     break;
-                // Add other event types you want to track, e.g., 'processed', 'dropped', 'deferred'
                 default:
                     console.log(`[Webhook] Unhandled event type: ${eventType}`);
                     break;
@@ -579,26 +574,22 @@ const handleSendGridWebhook = asyncHandler(async (req, res) => {
 
         } catch (error) {
             console.error(`[Webhook Error] Failed to process event: ${JSON.stringify(event)}. Error: ${error.message}`);
-            // Do not res.status(500) here. SendGrid expects a 200 OK for successful receipt of the batch.
-            // Any other status code will cause SendGrid to retry, potentially leading to duplicates.
         }
     }
 
-    // SendGrid expects a 200 OK response to confirm successful receipt of events.
     res.status(200).send('Event Webhook received');
 });
 
-// Make sure to export all functions that are used in your routes
 module.exports = {
     getCampaigns,
     createCampaign,
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually, // Exporting the renamed function
+    sendCampaign: sendCampaignManually,
     getCampaignOpenStats,
     getCampaignClickStats,
     getDashboardStats,
     getCampaignAnalytics,
-    handleSendGridWebhook, // The new webhook handler
+    handleSendGridWebhook,
 };
