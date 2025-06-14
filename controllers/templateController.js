@@ -2,7 +2,6 @@
 
 const Template = require('../models/Template');
 const logger = require('../utils/logger');
-const Sentry = require('@sentry/node');
 const asyncHandler = require('express-async-handler');
 
 /**
@@ -41,7 +40,6 @@ const createTemplate = asyncHandler(async (req, res) => {
 
     } catch (error) {
         logger.error(`Error creating template: ${error.message}`, error);
-        Sentry.captureException(error);
         throw error;
     }
 });
@@ -62,7 +60,6 @@ const getTemplates = asyncHandler(async (req, res) => {
 
     } catch (error) {
         logger.error(`Error fetching templates: ${error.message}`, error);
-        Sentry.captureException(error);
         throw error;
     }
 });

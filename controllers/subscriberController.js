@@ -1,39 +1,19 @@
+// emailxp/backend/controllers/subscriberController.js
+
 const asyncHandler = require('express-async-handler');
-const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
+const List = require('../models/List');
+const mongoose = require('mongoose');
 
 // @desc    Get all subscribers for a specific list
 // @route   GET /api/lists/:listId/subscribers
 // @access  Private
-const getSubscribers = asyncHandler(async (req, res) => {
-    const list = await List.findById(req.params.listId);
-
-    if (!list) {
-        res.status(404);
-        throw new Error('List not found');
-    }
-
-    // Make sure the authenticated user owns this list
-    if (list.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to view subscribers for this list');
-    }
-
-    // This fetches subscribers that *belong* to the list
-    const subscribers = await Subscriber.find({ list: req.params.listId });
-    res.status(200).json(subscribers);
-});
-
-// @desc    Add a new subscriber to a list
-// @route   POST /api/lists/:listId/subscribers
-// @access  Private
-const addSubscriber = asyncHandler(async (req, res) => {
-    const { email, name, status } = req.body;
+const getSubscribersByList = asyncHandler(async (req, res) => {
     const listId = req.params.listId;
+    const { status, search } = req.query; // Extract query parameters
 
-    if (!email) {
-        res.status(400);
-        throw new Error('Please add a subscriber email');
+    if (!mongoose.Types.ObjectId.isValid(listId)) {
+        return res.status(400).json({ message: 'Invalid List ID format.' });
     }
 
     const list = await List.findById(listId);
@@ -42,150 +22,199 @@ const addSubscriber = asyncHandler(async (req, res) => {
         throw new Error('List not found');
     }
 
-    // Ensure the authenticated user owns the list
+    // Ensure user owns the list
+    if (list.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to access this list');
+    }
+
+    // Build the query object for Mongoose
+    const query = { list: listId };
+
+    // Add status filter if provided
+    if (status) {
+        // You might want to validate 'status' against allowed values (e.g., 'subscribed', 'unsubscribed', 'bounced')
+        // For now, we'll directly use the provided status.
+        query.status = status;
+    }
+
+    // Add search filter if provided
+    if (search) {
+        // Use a case-insensitive regex for searching across email, firstName, lastName
+        const searchRegex = new RegExp(search, 'i');
+        query.$or = [
+            { email: searchRegex },
+            { firstName: searchRegex },
+            { lastName: searchRegex }
+        ];
+    }
+
+    const subscribers = await Subscriber.find(query); // Apply the constructed query
+    res.status(200).json(subscribers);
+});
+
+// @desc    Add a new subscriber to a list
+// @route   POST /api/lists/:listId/subscribers
+// @access  Private
+const addSubscriberToList = asyncHandler(async (req, res) => {
+    const listId = req.params.listId;
+    const { email, firstName, lastName, status } = req.body; // status can be 'subscribed', 'unsubscribed', 'bounced' etc.
+
+    if (!email) {
+        res.status(400);
+        throw new Error('Please provide an email for the subscriber.');
+    }
+
+    const list = await List.findById(listId);
+    if (!list) {
+        res.status(404);
+        throw new Error('List not found');
+    }
+
     if (list.user.toString() !== req.user.id) {
         res.status(401);
         throw new Error('Not authorized to add subscribers to this list');
     }
 
-    // Check if subscriber already exists in this specific list
-    const subscriberExists = await Subscriber.findOne({ email, list: listId });
-    if (subscriberExists) {
+    // Check if subscriber already exists in this list
+    const existingSubscriber = await Subscriber.findOne({ list: listId, email });
+    if (existingSubscriber) {
         res.status(400);
-        throw new Error('Subscriber with this email already exists in this list');
+        throw new Error('Subscriber with this email already exists in this list.');
     }
 
     const subscriber = await Subscriber.create({
         list: listId,
         email,
-        name,
-        status: status || 'subscribed',
-        user: req.user.id, // Good practice: link subscriber to user too
+        firstName,
+        lastName,
+        status: status || 'subscribed', // Default status
     });
 
-    // --- CRUCIAL ADDITION START ---
-    // Add the new subscriber's ID to the list's subscribers array
-    list.subscribers.push(subscriber._id);
-    await list.save(); // Save the updated list document
-    // --- CRUCIAL ADDITION END ---
+    // Update the subscriber count in the List model
+    list.subscriberCount = (list.subscriberCount || 0) + 1;
+    await list.save();
 
     res.status(201).json(subscriber);
 });
 
-// @desc    Get a single subscriber by ID within a list
+// @desc    Get a single subscriber by ID
 // @route   GET /api/lists/:listId/subscribers/:id
 // @access  Private
 const getSubscriberById = asyncHandler(async (req, res) => {
-    const list = await List.findById(req.params.listId);
+    const { listId, id } = req.params;
 
-    if (!list) {
-        res.status(404);
-        throw new Error('List not found');
-    }
-    // Ensure the authenticated user owns the list before checking subscriber
-    if (list.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to view this subscriber');
+    if (!mongoose.Types.ObjectId.isValid(listId) || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid ID format.' });
     }
 
-    const subscriber = await Subscriber.findById(req.params.id);
+    const subscriber = await Subscriber.findById(id);
 
     if (!subscriber) {
         res.status(404);
         throw new Error('Subscriber not found');
     }
 
-    // Also ensure the subscriber belongs to the specified list
-    if (subscriber.list.toString() !== req.params.listId) {
-        res.status(400);
-        throw new Error('Subscriber does not belong to this list');
+    // Ensure subscriber belongs to the specified list and the user owns the list
+    const list = await List.findById(listId);
+    if (!list || subscriber.list.toString() !== listId || list.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to view this subscriber or subscriber not found in specified list');
     }
 
     res.status(200).json(subscriber);
 });
 
-
-// @desc    Update a subscriber in a list
+// @desc    Update a subscriber
 // @route   PUT /api/lists/:listId/subscribers/:id
 // @access  Private
 const updateSubscriber = asyncHandler(async (req, res) => {
-    const list = await List.findById(req.params.listId);
+    const { listId, id } = req.params;
+    const { email, firstName, lastName, status } = req.body;
 
-    if (!list) {
-        res.status(404);
-        throw new Error('List not found');
-    }
-    // Ensure the authenticated user owns the list
-    if (list.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to update subscriber for this list');
+    if (!mongoose.Types.ObjectId.isValid(listId) || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid ID format.' });
     }
 
-    const subscriber = await Subscriber.findById(req.params.id);
+    const subscriber = await Subscriber.findById(id);
 
     if (!subscriber) {
         res.status(404);
         throw new Error('Subscriber not found');
     }
 
-    // Ensure the subscriber belongs to the specified list
-    if (subscriber.list.toString() !== req.params.listId) {
-        res.status(400);
-        throw new Error('Subscriber does not belong to this list');
+    // Ensure subscriber belongs to the specified list and the user owns the list
+    const list = await List.findById(listId);
+    if (!list || subscriber.list.toString() !== listId || list.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to update this subscriber or subscriber not found in specified list');
     }
 
-    const updatedSubscriber = await Subscriber.findByIdAndUpdate(req.params.id, req.body, {
-        new: true,
+    // Prevent changing list
+    if (req.body.list && req.body.list.toString() !== listId) {
+        res.status(400);
+        throw new Error('Cannot change a subscriber\'s list via this endpoint.');
+    }
+
+    // If email is being changed, check for uniqueness within the list
+    if (email && email !== subscriber.email) {
+        const existingSubscriber = await Subscriber.findOne({ list: listId, email });
+        if (existingSubscriber && existingSubscriber._id.toString() !== id) {
+            res.status(400);
+            throw new Error('Another subscriber with this email already exists in this list.');
+        }
+    }
+
+    // Prepare fields to update
+    const updateFields = { email, firstName, lastName, status };
+    Object.keys(updateFields).forEach(key => {
+        if (updateFields[key] !== undefined) {
+            subscriber[key] = updateFields[key];
+        }
     });
+
+    const updatedSubscriber = await subscriber.save();
 
     res.status(200).json(updatedSubscriber);
 });
 
-// @desc    Remove a subscriber from a list
+// @desc    Delete a subscriber from a list
 // @route   DELETE /api/lists/:listId/subscribers/:id
 // @access  Private
 const deleteSubscriber = asyncHandler(async (req, res) => {
-    const list = await List.findById(req.params.listId);
+    const { listId, id } = req.params;
 
-    if (!list) {
-        res.status(404);
-        throw new Error('List not found');
-    }
-    // Ensure the authenticated user owns the list
-    if (list.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to delete subscriber from this list');
+    if (!mongoose.Types.ObjectId.isValid(listId) || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid ID format.' });
     }
 
-    const subscriber = await Subscriber.findById(req.params.id);
+    const subscriber = await Subscriber.findById(id);
 
     if (!subscriber) {
         res.status(404);
         throw new Error('Subscriber not found');
     }
 
-    // Ensure the subscriber belongs to the specified list
-    if (subscriber.list.toString() !== req.params.listId) {
-        res.status(400);
-        throw new Error('Subscriber does not belong to this list');
+    // Ensure subscriber belongs to the specified list and the user owns the list
+    const list = await List.findById(listId);
+    if (!list || subscriber.list.toString() !== listId || list.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to delete this subscriber or subscriber not found in specified list');
     }
 
-    await subscriber.deleteOne(); // Use deleteOne() for Mongoose 6+
+    await subscriber.deleteOne();
 
-    // --- CRUCIAL ADDITION START ---
-    // Remove the subscriber's ID from the list's subscribers array
-    list.subscribers = list.subscribers.filter(
-        (subId) => subId.toString() !== req.params.id // Filter out the deleted subscriber's ID
-    );
-    await list.save(); // Save the updated list document
-    // --- CRUCIAL ADDITION END ---
+    // Decrement the subscriber count in the List model
+    list.subscriberCount = Math.max(0, (list.subscriberCount || 0) - 1);
+    await list.save();
 
-    res.status(200).json({ id: req.params.id, message: 'Subscriber removed' });
+    res.status(200).json({ id: req.params.id, message: 'Subscriber deleted successfully' });
 });
 
+
 module.exports = {
-    getSubscribers,
-    addSubscriber,
+    getSubscribersByList,
+    addSubscriberToList,
     getSubscriberById,
     updateSubscriber,
     deleteSubscriber,

@@ -6,7 +6,6 @@ const router = express.Router();
 const Subscriber = require('../models/Subscriber');
 const Campaign = require('../models/Campaign'); // Assuming Campaign model exists
 const logger = require('../utils/logger'); // Assuming your logger utility is here
-const Sentry = require('@sentry/node'); // Assuming Sentry is initialized in your app
 // --- END NEW IMPORTS ---
 
 const { trackOpen, trackClick } = require('../controllers/trackingController'); // --- MODIFIED: Import trackClick ---
@@ -81,7 +80,6 @@ router.get('/unsubscribe/:subscriberId', async (req, res) => {
 
   } catch (error) {
     logger.error(`[Unsubscribe Error] Failed to unsubscribe subscriber ID ${subscriberId}:`, error);
-    Sentry.captureException(error);
     res.status(500).send(`
         <!DOCTYPE html>
         <html lang="en">
