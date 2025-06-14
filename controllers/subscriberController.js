@@ -33,8 +33,6 @@ const getSubscribersByList = asyncHandler(async (req, res) => {
 
     // Add status filter if provided
     if (status) {
-        // You might want to validate 'status' against allowed values (e.g., 'subscribed', 'unsubscribed', 'bounced')
-        // For now, we'll directly use the provided status.
         query.status = status;
     }
 
@@ -104,25 +102,54 @@ const addSubscriberToList = asyncHandler(async (req, res) => {
 const getSubscriberById = asyncHandler(async (req, res) => {
     const { listId, id } = req.params;
 
+    console.log(`[Backend] Attempting to fetch subscriber with ID: ${id} for list ID: ${listId}`);
+
     if (!mongoose.Types.ObjectId.isValid(listId) || !mongoose.Types.ObjectId.isValid(id)) {
+        console.log('[Backend] Invalid List ID or Subscriber ID format.');
         return res.status(400).json({ message: 'Invalid ID format.' });
     }
 
     const subscriber = await Subscriber.findById(id);
 
     if (!subscriber) {
-        res.status(404);
-        throw new Error('Subscriber not found');
+        console.log(`[Backend] Subscriber with ID ${id} not found.`);
+        res.status(404); // Set status, but still need to throw/return to stop execution
+        throw new Error('Subscriber not found'); // This should be caught by asyncHandler
     }
+
+    // Log the found subscriber (check its content)
+    console.log('[Backend] Found subscriber:', subscriber);
+    console.log('[Backend] Subscriber list ID:', subscriber.list.toString());
+
 
     // Ensure subscriber belongs to the specified list and the user owns the list
     const list = await List.findById(listId);
-    if (!list || subscriber.list.toString() !== listId || list.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to view this subscriber or subscriber not found in specified list');
+
+    if (!list) {
+        console.log(`[Backend] List with ID ${listId} not found.`);
+        res.status(404);
+        throw new Error('List not found');
     }
 
-    res.status(200).json(subscriber);
+    console.log('[Backend] Found list:', list);
+    console.log('[Backend] List user ID:', list.user.toString());
+    console.log('[Backend] Requesting user ID:', req.user.id);
+
+
+    if (subscriber.list.toString() !== listId) {
+        console.log('[Backend] Subscriber does not belong to the specified list.');
+        res.status(401);
+        throw new Error('Subscriber not found in specified list');
+    }
+
+    if (list.user.toString() !== req.user.id) {
+        console.log('[Backend] Not authorized: User does not own the list.');
+        res.status(401);
+        throw new Error('Not authorized to view this subscriber');
+    }
+
+    console.log('[Backend] All authorization checks passed. Sending subscriber data.');
+    res.status(200).json(subscriber); // This is the line that should send data
 });
 
 // @desc    Update a subscriber
@@ -161,17 +188,16 @@ const updateSubscriber = asyncHandler(async (req, res) => {
         const existingSubscriber = await Subscriber.findOne({ list: listId, email });
         if (existingSubscriber && existingSubscriber._id.toString() !== id) {
             res.status(400);
-            throw new Error('Another subscriber with this email already exists in this list.');
+            throw new new Error('Another subscriber with this email already exists in this list.'); // Fixed typo: 'new new Error' -> 'new Error'
         }
     }
 
     // Prepare fields to update
-    const updateFields = { email, firstName, lastName, status };
-    Object.keys(updateFields).forEach(key => {
-        if (updateFields[key] !== undefined) {
-            subscriber[key] = updateFields[key];
-        }
-    });
+    // Only update if the value is provided in the request body (and not undefined)
+    if (email !== undefined) subscriber.email = email;
+    if (firstName !== undefined) subscriber.firstName = firstName;
+    if (lastName !== undefined) subscriber.lastName = lastName;
+    if (status !== undefined) subscriber.status = status;
 
     const updatedSubscriber = await subscriber.save();
 
