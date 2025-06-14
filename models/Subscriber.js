@@ -16,11 +16,16 @@ const subscriberSchema = mongoose.Schema(
                 'Please enter a valid email address',
             ],
         },
-        name: {
+        // --- UPDATED FIELDS: Replaced 'name' with 'firstName' and 'lastName' ---
+        firstName: {
             type: String,
-            default: '', // Subscriber name can be optional
+            default: '', // First name can be optional
         },
-        // UPDATED FIELD: Using 'status' enum instead of a boolean
+        lastName: {
+            type: String,
+            default: '', // Last name can be optional
+        },
+        // --- END UPDATED FIELDS ---
         status: {
             type: String,
             enum: ['subscribed', 'unsubscribed', 'bounced', 'complaint'], // Enum for possible statuses
