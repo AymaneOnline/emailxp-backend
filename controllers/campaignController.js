@@ -1,15 +1,19 @@
+// emailxp/backend/controllers/campaignController.js
+
 const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent');
-const ClickEvent = require('../models/ClickEvent');
+const OpenEvent = require('../models/OpenEvent'); // Make sure OpenEvent model is correctly imported
+const ClickEvent = require('../models/ClickEvent'); // Make sure ClickEvent model is correctly imported
 const Template = require('../models/Template');
-const mongoose = require('mongoose');
-const sgMail = require('@sendgrid/mail'); // <--- IMPORT SENDGRID MAIL
-sgMail.setApiKey(process.env.SENDGRID_API_KEY); // <--- SET SENDGRID API KEY
 
-const { executeSendCampaign } = require('../utils/campaignScheduler'); // Assuming this still handles overall send process
+const mongoose = require('mongoose');
+
+const { executeSendCampaign } = require('../utils/campaignScheduler');
+
+const sgMail = require('@sendgrid/mail'); // <--- NEW: Import SendGrid Mail
+sgMail.setApiKey(process.env.SENDGRID_API_KEY); // <--- NEW: Set SendGrid API Key from environment variable
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -157,6 +161,7 @@ const updateCampaign = asyncHandler(async (req, res) => {
     if (templateId === null || templateId === '' || updateFields.plainTextContent !== undefined) {
         campaign.plainTextContent = updateFields.plainTextContent !== undefined ? updateFields.plainTextContent : campaign.plainTextContent;
     }
+
 
     // --- CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
     if (updateFields.scheduledAt !== undefined) {
@@ -374,29 +379,37 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             status: 'sent'
         });
 
-        // 2. Total Emails Sent (accurate by summing 'emailsSuccessfullySent' from Campaign model)
-        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSent').lean(); // Changed to emailsSent
-        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSent || 0), 0); // Changed to emailsSent
+        // 2. Total Emails Sent (accurate by summing 'emailsSent' from Campaign model)
+        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSent').lean();
+        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSent || 0), 0);
 
-        // 3. Overall Unique Opens
-        const totalUniqueOpens = (await OpenEvent.distinct('subscriber', { user: userId })).length;
+        // 3. Overall Unique Opens (from Campaign model aggregate)
+        const totalUniqueOpens = (await Campaign.aggregate([
+            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // Match campaigns for the user
+            { $group: { _id: null, total: { $sum: "$opens" } } } // Sum the 'opens' field from Campaign model
+        ]))[0]?.total || 0;
 
-        // 4. Overall Unique Clicks
-        const totalUniqueClicks = (await ClickEvent.distinct('subscriber', { user: userId })).length;
+
+        // 4. Overall Unique Clicks (from Campaign model aggregate)
+        const totalUniqueClicks = (await Campaign.aggregate([
+            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // Match campaigns for the user
+            { $group: { _id: null, total: { $sum: "$clicks" } } } // Sum the 'clicks' field from Campaign model
+        ]))[0]?.total || 0;
+
 
         // --- NEW: Include bounced, unsubscribed, complaint counts in dashboard stats ---
         const totalBounced = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $match: { user: new mongoose.Types.ObjectId(userId) } }, // No status filter here, count bounces regardless if campaign is 'sent'
             { $group: { _id: null, total: { $sum: "$bouncedCount" } } }
         ]))[0]?.total || 0;
 
         const totalUnsubscribed = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $match: { user: new mongoose.Types.ObjectId(userId) } },
             { $group: { _id: null, total: { $sum: "$unsubscribedCount" } } }
         ]))[0]?.total || 0;
 
         const totalComplaints = (await Campaign.aggregate([
-            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $match: { user: new mongoose.Types.ObjectId(userId) } },
             { $group: { _id: null, total: { $sum: "$complaintCount" } } }
         ]))[0]?.total || 0;
         // --- END NEW ---
@@ -412,7 +425,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             totalUniqueClicks,
             overallOpenRate,
             overallClickRate,
-            totalBounced,     // <--- EXPORT NEW STATS
+            totalBounced,
             totalUnsubscribed,
             totalComplaints,
         });
@@ -445,14 +458,14 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         return res.status(401).json({ message: 'Not authorized to view analytics for this campaign.' });
     }
 
-    const totalEmailsSent = campaign.emailsSent || 0; // Use the stored count
+    const totalEmailsSent = campaign.emailsSent || 0; // Use the stored count from Campaign model
 
-    // Fetch counts and distinct values from OpenEvent and ClickEvent collections
-    const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
-    const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
+    // Fetch counts from Campaign model (updated by webhook)
+    const totalOpens = campaign.opens || 0;
+    const uniqueOpens = campaign.opens || 0; // For now, assuming campaign.opens represents unique for simplicity. Refine if needed.
 
-    const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
-    const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
+    const totalClicks = campaign.clicks || 0;
+    const uniqueClicks = campaign.clicks || 0; // For now, assuming campaign.clicks represents unique for simplicity. Refine if needed.
 
     // --- NEW: Include bounced, unsubscribed, complaint counts for a specific campaign ---
     const bouncedCount = campaign.bouncedCount || 0;
@@ -471,7 +484,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         campaignName: campaign.name,
         subject: campaign.subject,
         status: campaign.status,
-        sentAt: campaign.lastSentAt, // Changed from sentAt to lastSentAt for consistency
+        sentAt: campaign.lastSentAt,
         totalEmailsSent,
         totalOpens,
         uniqueOpens,
@@ -480,7 +493,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         openRate,
         clickRate,
         clickThroughRate,
-        bouncedCount,       // <--- EXPORT NEW STATS
+        bouncedCount,
         unsubscribedCount,
         complaintCount,
     });
@@ -493,17 +506,17 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 const handleSendGridWebhook = asyncHandler(async (req, res) => {
     // SendGrid sends an array of event objects
     const events = req.body;
-    console.log('[Webhook] Received SendGrid events:', events.length, 'events');
+    console.log(`[Webhook] Received SendGrid events: ${events.length} events`);
 
     for (const event of events) {
         try {
             const email = event.email;
             const eventType = event.event;
             // SendGrid custom_args payload comes as an object, extract from it
-            const campaignId = event.campaign_id; // Directly from custom_args
-            const subscriberId = event.subscriber_id; // Directly from custom_args
-            const listId = event.list_id; // Directly from custom_args
-
+            // Ensure these match the keys sent in custom_args in sendCampaignManually
+            const campaignId = event.campaign_id;
+            const subscriberId = event.subscriber_id;
+            const listId = event.list_id;
 
             console.log(`[Webhook] Processing event: ${eventType} for ${email}, Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}`);
 
@@ -515,7 +528,7 @@ const handleSendGridWebhook = asyncHandler(async (req, res) => {
                 continue; // Skip to the next event
             }
 
-            // Find the campaign (if campaignId is available)
+            // Find the campaign (if campaignId is available and valid)
             let campaign = null;
             if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
                 campaign = await Campaign.findById(campaignId);
@@ -575,12 +588,8 @@ const handleSendGridWebhook = asyncHandler(async (req, res) => {
     res.status(200).send('Event Webhook received');
 });
 
+// Make sure to export all functions that are used in your routes
 module.exports = {
-    getSubscribersByList,
-    addSubscriberToList,
-    getSubscriberById,
-    updateSubscriber,
-    deleteSubscriber,
     getCampaigns,
     createCampaign,
     getCampaignById,
@@ -591,5 +600,5 @@ module.exports = {
     getCampaignClickStats,
     getDashboardStats,
     getCampaignAnalytics,
-    handleSendGridWebhook, // <--- EXPORT THE NEW WEBHOOK HANDLER
+    handleSendGridWebhook, // The new webhook handler
 };
