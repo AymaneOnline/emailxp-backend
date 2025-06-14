@@ -1,16 +1,15 @@
-// emailxp/backend/controllers/campaignController.js
-
 const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent'); // Make sure OpenEvent model is correctly imported
-const ClickEvent = require('../models/ClickEvent'); // Make sure ClickEvent model is correctly imported
+const OpenEvent = require('../models/OpenEvent');
+const ClickEvent = require('../models/ClickEvent');
 const Template = require('../models/Template');
-
 const mongoose = require('mongoose');
+const sgMail = require('@sendgrid/mail'); // <--- IMPORT SENDGRID MAIL
+sgMail.setApiKey(process.env.SENDGRID_API_KEY); // <--- SET SENDGRID API KEY
 
-const { executeSendCampaign } = require('../utils/campaignScheduler');
+const { executeSendCampaign } = require('../utils/campaignScheduler'); // Assuming this still handles overall send process
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -159,7 +158,6 @@ const updateCampaign = asyncHandler(async (req, res) => {
         campaign.plainTextContent = updateFields.plainTextContent !== undefined ? updateFields.plainTextContent : campaign.plainTextContent;
     }
 
-
     // --- CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
     if (updateFields.scheduledAt !== undefined) {
         campaign.scheduledAt = updateFields.scheduledAt;
@@ -212,7 +210,7 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 const sendCampaignManually = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
-    const campaign = await Campaign.findById(campaignId);
+    const campaign = await Campaign.findById(campaignId).populate('list'); // Populate list to get subscribers
 
     if (!campaign) {
         res.status(404);
@@ -229,24 +227,85 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
+    // Get subscribers from the associated list
+    const subscribers = await Subscriber.find({ list: campaign.list._id, status: 'subscribed' });
+
+    if (subscribers.length === 0) {
+        res.status(400);
+        throw new Error('No active subscribers found in the target list to send the campaign to.');
+    }
+
     campaign.status = 'sending';
+    campaign.lastSentAt = new Date(); // Record when sending started
+    campaign.totalRecipients = subscribers.length; // Set total recipients
     await campaign.save();
 
-    const sendResult = await executeSendCampaign(campaignId);
+    let successfulSends = 0;
+    const messages = subscribers.map(subscriber => {
+        // --- IMPORTANT: ADD CUSTOM_ARGS FOR WEBHOOK TRACKING ---
+        // These custom_args will be included in the SendGrid webhook event payload
+        // This is how you link a webhook event back to a specific campaign in your DB
+        const customArgs = {
+            campaign_id: campaignId.toString(),
+            subscriber_id: subscriber._id.toString(),
+            list_id: campaign.list._id.toString()
+        };
 
-    if (sendResult.success) {
-        res.status(200).json({
-            message: sendResult.message,
-            totalSubscribers: sendResult.totalSubscribers,
-            emailsSent: sendResult.successfulSends,
-        });
-    } else {
+        return {
+            to: subscriber.email,
+            from: process.env.SENDGRID_SENDER_EMAIL, // Ensure this is set in your .env
+            subject: campaign.subject,
+            html: campaign.htmlContent,
+            text: campaign.plainTextContent || '',
+            // Add custom arguments to the email
+            custom_args: customArgs,
+            // Enable click tracking (already likely enabled in SendGrid settings, but good to be explicit)
+            trackingSettings: {
+                clickTracking: {
+                    enable: true,
+                    enableText: true,
+                },
+                openTracking: {
+                    enable: true,
+                },
+            },
+        };
+    });
+
+    try {
+        const [response] = await sgMail.send(messages);
+        console.log('SendGrid API Response:', response.statusCode);
+
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+            successfulSends = messages.length; // Assume all were accepted by SendGrid API
+            campaign.status = 'sent';
+            campaign.emailsSent = successfulSends; // Update emailsSent count
+            await campaign.save();
+            res.status(200).json({
+                message: 'Campaign sending initiated successfully!',
+                totalSubscribers: subscribers.length,
+                emailsSent: successfulSends,
+            });
+        } else {
+            console.error('SendGrid API returned a non-2xx status:', response.body);
+            campaign.status = 'failed';
+            await campaign.save();
+            res.status(response.statusCode).json({
+                message: 'SendGrid API failed to accept emails.',
+                error: response.body,
+            });
+        }
+    } catch (sendgridError) {
+        console.error('Error sending campaign via SendGrid:', sendgridError.response?.body || sendgridError.message);
+        campaign.status = 'failed';
+        await campaign.save();
         res.status(500).json({
-            message: sendResult.message || 'Failed to send campaign due to an internal error.',
-            error: sendResult.error || 'Unknown error during campaign send.',
+            message: 'Failed to send campaign due to SendGrid error.',
+            error: sendgridError.response?.body || sendgridError.message,
         });
     }
 });
+
 
 // @desc    Get Open Statistics for a Specific Campaign
 // @route   GET /api/campaigns/:id/opens
@@ -316,14 +375,31 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         });
 
         // 2. Total Emails Sent (accurate by summing 'emailsSuccessfullySent' from Campaign model)
-        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSuccessfullySent').lean();
-        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSuccessfullySent || 0), 0);
+        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSent').lean(); // Changed to emailsSent
+        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSent || 0), 0); // Changed to emailsSent
 
         // 3. Overall Unique Opens
         const totalUniqueOpens = (await OpenEvent.distinct('subscriber', { user: userId })).length;
 
         // 4. Overall Unique Clicks
         const totalUniqueClicks = (await ClickEvent.distinct('subscriber', { user: userId })).length;
+
+        // --- NEW: Include bounced, unsubscribed, complaint counts in dashboard stats ---
+        const totalBounced = (await Campaign.aggregate([
+            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $group: { _id: null, total: { $sum: "$bouncedCount" } } }
+        ]))[0]?.total || 0;
+
+        const totalUnsubscribed = (await Campaign.aggregate([
+            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $group: { _id: null, total: { $sum: "$unsubscribedCount" } } }
+        ]))[0]?.total || 0;
+
+        const totalComplaints = (await Campaign.aggregate([
+            { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+            { $group: { _id: null, total: { $sum: "$complaintCount" } } }
+        ]))[0]?.total || 0;
+        // --- END NEW ---
 
         // Calculate rates
         const overallOpenRate = totalEmailsSent > 0 ? ((totalUniqueOpens / totalEmailsSent) * 100).toFixed(2) : '0.00';
@@ -336,6 +412,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             totalUniqueClicks,
             overallOpenRate,
             overallClickRate,
+            totalBounced,     // <--- EXPORT NEW STATS
+            totalUnsubscribed,
+            totalComplaints,
         });
 
     } catch (error) {
@@ -366,7 +445,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         return res.status(401).json({ message: 'Not authorized to view analytics for this campaign.' });
     }
 
-    const totalEmailsSent = campaign.emailsSuccessfullySent || 0; // Use the stored count
+    const totalEmailsSent = campaign.emailsSent || 0; // Use the stored count
 
     // Fetch counts and distinct values from OpenEvent and ClickEvent collections
     const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
@@ -374,6 +453,12 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 
     const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
     const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
+
+    // --- NEW: Include bounced, unsubscribed, complaint counts for a specific campaign ---
+    const bouncedCount = campaign.bouncedCount || 0;
+    const unsubscribedCount = campaign.unsubscribedCount || 0;
+    const complaintCount = campaign.complaintCount || 0;
+    // --- END NEW ---
 
     // Calculate rates, ensuring no division by zero
     const openRate = totalEmailsSent > 0 ? ((uniqueOpens / totalEmailsSent) * 100).toFixed(2) : "0.00";
@@ -386,7 +471,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         campaignName: campaign.name,
         subject: campaign.subject,
         status: campaign.status,
-        sentAt: campaign.sentAt,
+        sentAt: campaign.lastSentAt, // Changed from sentAt to lastSentAt for consistency
         totalEmailsSent,
         totalOpens,
         uniqueOpens,
@@ -395,19 +480,116 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         openRate,
         clickRate,
         clickThroughRate,
+        bouncedCount,       // <--- EXPORT NEW STATS
+        unsubscribedCount,
+        complaintCount,
     });
 });
 // --- END NEW ---
 
+// @desc    Handle SendGrid Event Webhooks
+// @route   POST /api/campaigns/webhooks/sendgrid
+// @access  Public (called by SendGrid)
+const handleSendGridWebhook = asyncHandler(async (req, res) => {
+    // SendGrid sends an array of event objects
+    const events = req.body;
+    console.log('[Webhook] Received SendGrid events:', events.length, 'events');
+
+    for (const event of events) {
+        try {
+            const email = event.email;
+            const eventType = event.event;
+            // SendGrid custom_args payload comes as an object, extract from it
+            const campaignId = event.campaign_id; // Directly from custom_args
+            const subscriberId = event.subscriber_id; // Directly from custom_args
+            const listId = event.list_id; // Directly from custom_args
+
+
+            console.log(`[Webhook] Processing event: ${eventType} for ${email}, Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}`);
+
+            // Find the subscriber using subscriberId and listId for precision
+            const subscriber = await Subscriber.findOne({ _id: subscriberId, list: listId });
+
+            if (!subscriber) {
+                console.log(`[Webhook] Subscriber with ID ${subscriberId} not found for list ${listId}. Skipping event.`);
+                continue; // Skip to the next event
+            }
+
+            // Find the campaign (if campaignId is available)
+            let campaign = null;
+            if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
+                campaign = await Campaign.findById(campaignId);
+            } else {
+                console.log(`[Webhook] Invalid or missing campaignId for event: ${JSON.stringify(event)}. Campaign stats will not be updated.`);
+            }
+
+            switch (eventType) {
+                case 'bounce':
+                    subscriber.status = 'bounced';
+                    if (campaign) campaign.bouncedCount = (campaign.bouncedCount || 0) + 1;
+                    console.log(`[Webhook] Subscriber ${email} marked as bounced.`);
+                    break;
+                case 'spamreport':
+                    subscriber.status = 'complaint';
+                    if (campaign) campaign.complaintCount = (campaign.complaintCount || 0) + 1;
+                    console.log(`[Webhook] Subscriber ${email} marked as spam complaint.`);
+                    break;
+                case 'unsubscribe':
+                    subscriber.status = 'unsubscribed';
+                    if (campaign) campaign.unsubscribedCount = (campaign.unsubscribedCount || 0) + 1;
+                    console.log(`[Webhook] Subscriber ${email} marked as unsubscribed.`);
+                    break;
+                case 'click':
+                    // These fields should be incremented via the webhook to stay real-time
+                    if (campaign) campaign.clicks = (campaign.clicks || 0) + 1;
+                    // You might also want to log ClickEvent here if you were not previously doing so via middleware
+                    console.log(`[Webhook] Subscriber ${email} clicked.`);
+                    break;
+                case 'open':
+                    // These fields should be incremented via the webhook to stay real-time
+                    if (campaign) campaign.opens = (campaign.opens || 0) + 1;
+                    // You might also want to log OpenEvent here if you were not previously doing so via middleware
+                    console.log(`[Webhook] Subscriber ${email} opened.`);
+                    break;
+                case 'delivered':
+                    // You could track delivery count here if needed
+                    console.log(`[Webhook] Email to ${email} delivered.`);
+                    break;
+                // Add other event types you want to track, e.g., 'processed', 'dropped', 'deferred'
+                default:
+                    console.log(`[Webhook] Unhandled event type: ${eventType}`);
+                    break;
+            }
+
+            await subscriber.save();
+            if (campaign) await campaign.save();
+
+        } catch (error) {
+            console.error(`[Webhook Error] Failed to process event: ${JSON.stringify(event)}. Error: ${error.message}`);
+            // Do not res.status(500) here. SendGrid expects a 200 OK for successful receipt of the batch.
+            // Any other status code will cause SendGrid to retry, potentially leading to duplicates.
+        }
+    }
+
+    // SendGrid expects a 200 OK response to confirm successful receipt of events.
+    res.status(200).send('Event Webhook received');
+});
+
 module.exports = {
+    getSubscribersByList,
+    addSubscriberToList,
+    getSubscriberById,
+    updateSubscriber,
+    deleteSubscriber,
     getCampaigns,
     createCampaign,
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually,
+    sendCampaign: sendCampaignManually, // Exporting the renamed function
     getCampaignOpenStats,
     getCampaignClickStats,
     getDashboardStats,
-    getCampaignAnalytics, // <--- ADDED: Export the new function
+    getCampaignAnalytics,
+    handleSendGridWebhook, // <--- EXPORT THE NEW WEBHOOK HANDLER
 };
