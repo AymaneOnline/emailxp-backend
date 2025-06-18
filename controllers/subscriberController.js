@@ -58,6 +58,9 @@ const addSubscriberToList = asyncHandler(async (req, res) => {
     const listId = req.params.listId;
     const { email, firstName, lastName, status } = req.body; // status can be 'subscribed', 'unsubscribed', 'bounced' etc.
 
+    console.log(`[addSubscriberToList] === Starting Subscriber Addition for List: ${listId} ===`);
+    console.log(`[addSubscriberToList] Incoming data: Email=${email}, List ID=${listId}`);
+
     if (!email) {
         res.status(400);
         throw new Error('Please provide an email for the subscriber.');
@@ -65,11 +68,15 @@ const addSubscriberToList = asyncHandler(async (req, res) => {
 
     const list = await List.findById(listId);
     if (!list) {
+        console.error(`[addSubscriberToList] List not found for ID: ${listId}`);
         res.status(404);
         throw new Error('List not found');
     }
+    console.log(`[addSubscriberToList] Found List: ${list.name} (ID: ${list._id})`);
+
 
     if (list.user.toString() !== req.user.id) {
+        console.error(`[addSubscriberToList] Authorization failed: User ${req.user.id} does not own list ${listId}`);
         res.status(401);
         throw new Error('Not authorized to add subscribers to this list');
     }
@@ -77,6 +84,7 @@ const addSubscriberToList = asyncHandler(async (req, res) => {
     // Check if subscriber already exists in this list
     const existingSubscriber = await Subscriber.findOne({ list: listId, email });
     if (existingSubscriber) {
+        console.warn(`[addSubscriberToList] Subscriber with email ${email} already exists in list ${listId}.`);
         res.status(400);
         throw new Error('Subscriber with this email already exists in this list.');
     }
@@ -86,13 +94,31 @@ const addSubscriberToList = asyncHandler(async (req, res) => {
         email,
         firstName,
         lastName,
-        status: status || 'subscribed', // Default status
+        status: status || 'subscribed',
     });
+    console.log(`[addSubscriberToList] New Subscriber created successfully: ID=${subscriber._id}, Email=${subscriber.email}`);
 
-    // Update the subscriber count in the List model
-    list.subscriberCount = (list.subscriberCount || 0) + 1;
-    await list.save();
 
+    // --- CRUCIAL DEBUGGING LOGS FOR LIST UPDATE ---
+    console.log(`[addSubscriberToList] List.subscribers array BEFORE push:`, list.subscribers.map(id => id.toString())); // Log IDs as strings
+    
+    // Push the new subscriber's ID into the list's subscribers array
+    list.subscribers.push(subscriber._id);
+
+    console.log(`[addSubscriberToList] List.subscribers array AFTER push (in memory):`, list.subscribers.map(id => id.toString())); // Log IDs as strings
+
+    try {
+        await list.save();
+        console.log(`[addSubscriberToList] List document updated successfully in DB with new subscriber reference.`);
+    } catch (saveError) {
+        console.error(`[addSubscriberToList] FATAL ERROR saving list document for ID ${list._id}:`, saveError);
+        // Provide more detailed error to client for debugging
+        res.status(500);
+        throw new Error(`Failed to update list with new subscriber reference: ${saveError.message}`);
+    }
+    // --- END CRUCIAL DEBUGGING LOGS ---
+
+    console.log(`[addSubscriberToList] === Finished Subscriber Addition ===`);
     res.status(201).json(subscriber);
 });
 
@@ -188,7 +214,7 @@ const updateSubscriber = asyncHandler(async (req, res) => {
         const existingSubscriber = await Subscriber.findOne({ list: listId, email });
         if (existingSubscriber && existingSubscriber._id.toString() !== id) {
             res.status(400);
-            throw new new Error('Another subscriber with this email already exists in this list.'); // Fixed typo: 'new new Error' -> 'new Error'
+            throw new Error('Another subscriber with this email already exists in this list.');
         }
     }
 
@@ -230,9 +256,11 @@ const deleteSubscriber = asyncHandler(async (req, res) => {
 
     await subscriber.deleteOne();
 
-    // Decrement the subscriber count in the List model
-    list.subscriberCount = Math.max(0, (list.subscriberCount || 0) - 1);
-    await list.save();
+    // Remove the subscriber's ID from the list's subscribers array
+    list.subscribers = list.subscribers.filter(subId => subId.toString() !== subscriber._id.toString());
+    // Also decrement the subscriberCount if you're using it (optional)
+    // list.subscriberCount = Math.max(0, (list.subscriberCount || 0) - 1);
+    await list.save(); // Save the updated list document
 
     res.status(200).json({ id: req.params.id, message: 'Subscriber deleted successfully' });
 });
