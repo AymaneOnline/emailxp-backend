@@ -1,6 +1,12 @@
+// Add this line AT THE VERY TOP of the file, even before any 'require' statements.
+console.log('!!!!!!!!!!! emailService.js FILE HAS BEEN PARSED AND LOADED !!!!!!!!!!!');
+
 const sgMail = require('@sendgrid/mail');
 const cheerio = require('cheerio');
-const { convert } = require('html-to-text'); // <--- ADD THIS LINE (if not already there)
+const { convert } = require('html-to-text');
+
+// Add this line right after the 'require' statements
+console.log('!!!!!!!!!!! All dependencies for emailService.js have been loaded !!!!!!!!!!!');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -95,7 +101,9 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     };
 
     console.log(`[EmailService] Message object prepared for SendGrid (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);
-    // Added a check here to ensure 'text' is not empty before sending
+    // Add this just before sgMail.send()
+    console.log('!!!!!!!!!!! Preparing to send email via SendGrid !!!!!!!!!!!');
+
     if (!msg.text || msg.text.length === 0) {
         console.error('[EmailService] ERROR: Plain text content is still empty just before sending! This indicates an issue with generation.');
         return { success: false, message: 'Plain text content is empty, cannot send email.' };
