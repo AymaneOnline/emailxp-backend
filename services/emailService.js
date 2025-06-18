@@ -1,12 +1,9 @@
 const sgMail = require('@sendgrid/mail');
-const cheerio = require('cheerio'); // A fast, flexible, and lean implementation of core jQuery specifically for the server.
-                                     // Install with: npm install cheerio
+const cheerio = require('cheerio');
+const { convert } = require('html-to-text'); // <--- ADD THIS LINE
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// IMPORTANT: Define your backend's base URL for tracking.
-// This should be the URL where your tracking routes are accessible.
-// Make sure this matches your deployed backend URL.
 const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-backend-production.up.railway.app';
 
 
@@ -18,63 +15,64 @@ const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-ba
  * @returns {string} The HTML content with rewritten URLs.
  */
 const rewriteUrlsForTracking = (htmlContent, campaignId, subscriberId) => {
-    // ADDED LOG: Confirm this function is being called
     console.log(`[EmailService] Rewriting URLs for campaign: ${campaignId}, subscriber: ${subscriberId}`);
-    const $ = cheerio.load(htmlContent); // Load HTML into Cheerio for easy parsing
+    const $ = cheerio.load(htmlContent);
 
-    // Find all <a> tags
     $('a').each((index, element) => {
         const originalHref = $(element).attr('href');
 
-        // Only rewrite if it's a valid HTTP/HTTPS link and not already a tracking link (to prevent double-rewriting)
         if (originalHref && (originalHref.startsWith('http://') || originalHref.startsWith('https://')) && !originalHref.includes('/api/track/click')) {
-            // Encode the original URL so it can be passed as a query parameter
             const encodedOriginalUrl = encodeURIComponent(originalHref);
-
-            // Construct the tracking URL
-            // Ensure campaignId and subscriberId are valid to avoid issues.
-            // Using a template literal for clean URL construction
             const trackingUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/click/${campaignId}/${subscriberId}?url=${encodedOriginalUrl}`;
-
-            // Set the new href on the <a> tag
             $(element).attr('href', trackingUrl);
             console.log(`[EmailService] Rewritten link from ${originalHref} to ${trackingUrl}`);
         }
     });
 
-    return $.html(); // Return the modified HTML
+    return $.html();
 };
 
 
 const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
-    // ADDED LOG: Log initial parameters before sending
     console.log(`[EmailService] Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}`);
 
-    // --- NEW: Rewrite URLs before sending ---
     let finalHtmlContent = htmlContent;
-    if (campaignId && subscriberId) { // Only rewrite if tracking IDs are provided
+    if (campaignId && subscriberId) {
         finalHtmlContent = rewriteUrlsForTracking(htmlContent, campaignId, subscriberId);
     }
-    // --- END NEW ---
 
-    // --- NEW: Add tracking pixel for open tracking ---
     const trackingPixelUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/open/${campaignId}/${subscriberId}`;
     const trackingPixel = `<img src="${trackingPixelUrl}" alt="" width="1" height="1" style="display:none !important; min-height:1px; width:1px; border-width:0; margin-top:0; margin-bottom:0; margin-right:0; margin-left:0; padding-top:0; padding-bottom:0; padding-right:0; padding-left:0;" />`;
 
-    // Append the tracking pixel to the HTML content
     finalHtmlContent = finalHtmlContent + trackingPixel;
-    // --- END NEW ---
 
+    // --- NEW LOGIC: Generate plainTextContent if it's empty ---
+    let finalPlainTextContent = plainTextContent;
+    if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
+        // Convert HTML to plain text using html-to-text
+        finalPlainTextContent = convert(finalHtmlContent, {
+            wordwrap: 130, // Wrap lines for readability
+            selectors: [
+                { selector: 'img', format: 'skip' }, // Skip images in plain text
+                { selector: 'a', options: { ignoreHref: true } } // Don't show full hrefs in plain text version
+            ]
+        });
+        // Fallback in case conversion yields nothing useful
+        if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
+            finalPlainTextContent = subject; // As a last resort, use the subject
+        }
+        console.log(`[EmailService] Generated plainTextContent: "${finalPlainTextContent.substring(0, 100)}..."`);
+    }
+    // --- END NEW LOGIC ---
 
     const msg = {
-        to: toEmail, // Recipient email address
-        from: process.env.SENDER_EMAIL, // Your verified sender email
+        to: toEmail,
+        from: process.env.SENDGRID_SENDER_EMAIL, // <--- FIXED THIS: Changed to SENDGRID_SENDER_EMAIL
         subject: subject,
-        html: finalHtmlContent, // Use the modified HTML content
-        text: plainTextContent, // Plain text version for email clients that don't support HTML
+        html: finalHtmlContent,
+        text: finalPlainTextContent, // <--- USE THIS: Use the potentially generated plain text content
     };
 
-    // ADDED LOG: Log the message object before sending (exclude API key)
     console.log(`[EmailService] Message object prepared (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);
 
     try {
@@ -82,11 +80,9 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         console.log(`[EmailService] Email sent successfully to ${toEmail}`);
         return { success: true, message: 'Email sent' };
     } catch (error) {
-        // UPDATED LOG: More descriptive FATAL ERROR log and ensure full error object is logged
-        console.error(`[EmailService] FATAL ERROR sending email to ${toEmail}:`, error); 
+        console.error(`[EmailService] FATAL ERROR sending email to ${toEmail}:`, error);
         if (error.response) {
-            // UPDATED LOG: Ensure detailed SendGrid error response body is logged if available
-            console.error(`[EmailService] SendGrid detailed error response body:`, error.response.body); 
+            console.error(`[EmailService] SendGrid detailed error response body:`, error.response.body);
         }
         return { success: false, message: 'Failed to send email', error: error.message };
     }
@@ -94,6 +90,4 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
 
 module.exports = {
     sendEmail,
-    // You might want to export rewriteUrlsForTracking if it's reused elsewhere,
-    // but for now, keeping it internal to this file for clarity.
 };
