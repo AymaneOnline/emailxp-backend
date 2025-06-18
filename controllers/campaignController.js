@@ -10,10 +10,15 @@ const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
 
-const { executeSendCampaign } = require('../utils/campaignScheduler');
+// Import emailService.js here
+const { sendEmail } = require('../services/emailService'); // <--- ADD THIS LINE
 
-const sgMail = require('@sendgrid/mail');
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// You are no longer directly using sgMail in this controller for sending campaigns,
+// so you can remove these lines if sendCampaignManually is the only place it was used.
+// If you use sgMail for other purposes (e.g., direct transactional emails not tied to campaigns), keep it.
+// const sgMail = require('@sendgrid/mail');
+// sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -48,7 +53,7 @@ const createCampaign = asyncHandler(async (req, res) => {
 
     let finalSubject = subject;
     let finalHtmlContent = htmlContent;
-    let finalPlainTextContent = plainTextContent;
+    let finalPlainTtextContent = plainTextContent; // Keep this variable name consistent for clarity
     let usedTemplateId = null;
 
     if (templateId) {
@@ -60,7 +65,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         usedTemplateId = template._id;
         finalSubject = template.subject;
         finalHtmlContent = template.htmlContent;
-        finalPlainTextContent = template.plainTextContent || '';
+        finalPlainTtextContent = template.plainTextContent || '';
     } else {
         if (!subject || !htmlContent) {
             res.status(400);
@@ -74,7 +79,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         name,
         subject: finalSubject,
         htmlContent: finalHtmlContent,
-        plainTextContent: finalPlainTextContent,
+        plainTextContent: finalPlainTtextContent,
         status: status || 'draft',
         scheduledAt: scheduledAt || null,
         template: usedTemplateId,
@@ -215,7 +220,8 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 const sendCampaignManually = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
-    const campaign = await Campaign.findById(campaignId).populate('list'); // Populate list to get subscribers
+    // Populate list to get subscribers from it
+    const campaign = await Campaign.findById(campaignId).populate('list');
 
     if (!campaign) {
         res.status(404);
@@ -232,106 +238,104 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
-    // --- CRITICAL DEBUGGING AND VALIDATION LOGS/CHECKS ---
-    console.log(`[DEBUG] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
-    console.log(`[DEBUG] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
+    console.log(`[DEBUG - CampaignController] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
+    console.log(`[DEBUG - CampaignController] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
 
-    // Verify SendGrid sender email
     if (!process.env.SENDGRID_SENDER_EMAIL || process.env.SENDGRID_SENDER_EMAIL.trim() === '') {
         console.error(`[ERROR] SENDGRID_SENDER_EMAIL is not configured or is empty. Current value: "${process.env.SENDGRID_SENDER_EMAIL}"`);
         res.status(500);
         throw new Error('SendGrid sender email (SENDGRID_SENDER_EMAIL) is not configured in environment variables. Please set it.');
     }
-    console.log(`[DEBUG] SENDGRID_SENDER_EMAIL env var: "${process.env.SENDGRID_SENDER_EMAIL}"`);
-
-    // Verify campaign content
-    const hasHtmlContent = campaign.htmlContent && campaign.htmlContent.trim().length > 0;
-    const hasPlainTextContent = campaign.plainTextContent && campaign.plainTextContent.trim().length > 0;
-
-    console.log(`[DEBUG] Campaign Subject: "${campaign.subject}"`);
-    console.log(`[DEBUG] Campaign HTML Content available: ${hasHtmlContent ? 'Yes' : 'No'} (length: ${campaign.htmlContent ? campaign.htmlContent.length : 0})`);
-    console.log(`[DEBUG] Campaign Plain Text Content available: ${hasPlainTextContent ? 'Yes' : 'No'} (length: ${campaign.plainTextContent ? campaign.plainTextContent.length : 0})`);
-
-    if (!hasHtmlContent && !hasPlainTextContent) {
-        res.status(400);
-        throw new Error('Campaign must have either HTML content or Plain Text content to be sent. Both are empty.');
-    }
-    // --- END CRITICAL DEBUGGING AND VALIDATION LOGS/CHECKS ---
+    console.log(`[DEBUG - CampaignController] SENDGRID_SENDER_EMAIL env var: "${process.env.SENDGRID_SENDER_EMAIL}"`);
 
     // Get subscribers from the associated list with status 'subscribed'
     const subscribers = await Subscriber.find({ list: campaign.list._id, status: 'subscribed' });
 
-    console.log(`[DEBUG] Found ${subscribers.length} subscribers with status 'subscribed' for list ID: ${campaign.list._id}`);
-    if (subscribers.length > 0) {
-        console.log('[DEBUG] First subscriber found:', subscribers[0].email, 'Status:', subscribers[0].status);
-        console.log('[DEBUG] All found subscribers:', subscribers.map(s => ({ email: s.email, status: s.status, id: s._id })));
-    } else {
+    console.log(`[DEBUG - CampaignController] Found ${subscribers.length} subscribers with status 'subscribed' for list ID: ${campaign.list._id}`);
+    if (subscribers.length === 0) {
         res.status(400);
         throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
     }
 
+    // Update campaign status to 'sending' and save immediately
     campaign.status = 'sending';
     campaign.lastSentAt = new Date();
     campaign.totalRecipients = subscribers.length;
     await campaign.save();
 
     let successfulSends = 0;
-    const messages = subscribers.map(subscriber => {
-        const customArgs = {
-            campaign_id: campaignId.toString(),
-            subscriber_id: subscriber._id.toString(),
-            list_id: campaign.list._id.toString()
-        };
-
-        return {
-            to: subscriber.email,
-            from: process.env.SENDGRID_SENDER_EMAIL,
-            subject: campaign.subject,
-            html: campaign.htmlContent, // This will be used if hasHtmlContent is true
-            text: campaign.plainTextContent || '', // This will be used as fallback or alongside HTML
-            custom_args: customArgs,
-            trackingSettings: {
-                clickTracking: {
-                    enable: true,
-                    enableText: true,
-                },
-                openTracking: {
-                    enable: true,
-                },
-            },
-        };
-    });
+    let failedSends = 0;
 
     try {
-        const [response] = await sgMail.send(messages);
-        console.log('SendGrid API Response Status Code:', response.statusCode);
+        const sendPromises = subscribers.map(async (subscriber) => {
+            // Personalize content
+            const personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+            let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+            let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
 
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-            successfulSends = messages.length;
-            campaign.status = 'sent';
-            campaign.emailsSent = successfulSends;
-            await campaign.save();
-            res.status(200).json({
-                message: 'Campaign sending initiated successfully!',
-                totalSubscribers: subscribers.length,
-                emailsSent: successfulSends,
-            });
-        } else {
-            console.error('SendGrid API returned a non-2xx status:', response.body);
-            campaign.status = 'failed';
-            await campaign.save();
-            res.status(response.statusCode).json({
-                message: 'SendGrid API failed to accept emails.',
-                error: response.body,
-            });
-        }
-    } catch (sendgridError) {
-        console.error('Error sending campaign via SendGrid:', sendgridError.response?.body || sendgridError.message);
+            // Add unsubscribe link dynamically
+            const unsubscribeUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/track/unsubscribe/${subscriber._id}?campaignId=${campaign._id}`;
+            personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
+            personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
+
+            // --- CRITICAL CALL TO emailService.sendEmail ---
+            console.log('############# BEFORE CALLING emailService.sendEmail IN CONTROLLER #############');
+            console.log(`[Controller Caller] Subscriber Email: ${subscriber.email}`);
+            console.log(`[Controller Caller] HTML Content length (after personalization): ${personalizedHtml ? personalizedHtml.length : 'N/A'}`);
+            console.log(`[Controller Caller] Plain Text Content length (after personalization, before emailService): ${personalizedPlain ? personalizedPlain.length : 'N/A'}`);
+            // Log the actual function's source as seen by this controller
+            console.log('[Controller Caller] Source of emailService.sendEmail function:\n', sendEmail.toString());
+            console.log('###################################################################');
+
+            const result = await sendEmail(
+                subscriber.email,
+                personalizedSubject,
+                personalizedHtml,
+                personalizedPlain, // Pass the personalized content, emailService will handle fallback if still empty
+                campaign._id,
+                subscriber._id
+            );
+
+            console.log(`[DEBUG - CampaignController] sendEmail for ${subscriber.email} returned:`, result);
+            return result;
+        });
+
+        const results = await Promise.allSettled(sendPromises);
+
+        results.forEach(outcome => {
+            if (outcome.status === 'fulfilled') {
+                if (outcome.value && outcome.value.success) {
+                    successfulSends++;
+                } else {
+                    failedSends++;
+                    const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
+                    const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
+                    console.error(`[CampaignController] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                }
+            } else if (outcome.status === 'rejected') {
+                failedSends++;
+                console.error(`[CampaignController] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
+            }
+        });
+
+        campaign.status = successfulSends > 0 ? 'sent' : 'failed';
+        campaign.emailsSent = successfulSends;
+        await campaign.save();
+
+        res.status(200).json({
+            message: 'Campaign sending initiated. Check logs for details.',
+            totalSubscribers: subscribers.length,
+            successfulSends: successfulSends,
+            failedSends: failedSends,
+        });
+
+    } catch (error) {
+        console.error('[CampaignController] Error sending campaign:', error.response?.body || error.message);
         campaign.status = 'failed';
         await campaign.save();
         res.status(500).json({
-            message: 'Failed to send campaign due to SendGrid error.',
-            error: sendgridError.response?.body || sendgridError.message,
+            message: 'Failed to send campaign.',
+            error: error.response?.body || error.message,
         });
     }
 });
@@ -605,7 +609,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually,
+    sendCampaign: sendCampaignManually, // Export the refactored function
     getCampaignOpenStats,
     getCampaignClickStats,
     getDashboardStats,
