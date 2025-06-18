@@ -232,9 +232,31 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
     }
 
-    // --- DEBUGGING LOGS START HERE ---
+    // --- CRITICAL DEBUGGING AND VALIDATION LOGS/CHECKS ---
     console.log(`[DEBUG] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
     console.log(`[DEBUG] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
+
+    // Verify SendGrid sender email
+    if (!process.env.SENDGRID_SENDER_EMAIL || process.env.SENDGRID_SENDER_EMAIL.trim() === '') {
+        console.error(`[ERROR] SENDGRID_SENDER_EMAIL is not configured or is empty. Current value: "${process.env.SENDGRID_SENDER_EMAIL}"`);
+        res.status(500);
+        throw new Error('SendGrid sender email (SENDGRID_SENDER_EMAIL) is not configured in environment variables. Please set it.');
+    }
+    console.log(`[DEBUG] SENDGRID_SENDER_EMAIL env var: "${process.env.SENDGRID_SENDER_EMAIL}"`);
+
+    // Verify campaign content
+    const hasHtmlContent = campaign.htmlContent && campaign.htmlContent.trim().length > 0;
+    const hasPlainTextContent = campaign.plainTextContent && campaign.plainTextContent.trim().length > 0;
+
+    console.log(`[DEBUG] Campaign Subject: "${campaign.subject}"`);
+    console.log(`[DEBUG] Campaign HTML Content available: ${hasHtmlContent ? 'Yes' : 'No'} (length: ${campaign.htmlContent ? campaign.htmlContent.length : 0})`);
+    console.log(`[DEBUG] Campaign Plain Text Content available: ${hasPlainTextContent ? 'Yes' : 'No'} (length: ${campaign.plainTextContent ? campaign.plainTextContent.length : 0})`);
+
+    if (!hasHtmlContent && !hasPlainTextContent) {
+        res.status(400);
+        throw new Error('Campaign must have either HTML content or Plain Text content to be sent. Both are empty.');
+    }
+    // --- END CRITICAL DEBUGGING AND VALIDATION LOGS/CHECKS ---
 
     // Get subscribers from the associated list with status 'subscribed'
     const subscribers = await Subscriber.find({ list: campaign.list._id, status: 'subscribed' });
@@ -243,10 +265,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     if (subscribers.length > 0) {
         console.log('[DEBUG] First subscriber found:', subscribers[0].email, 'Status:', subscribers[0].status);
         console.log('[DEBUG] All found subscribers:', subscribers.map(s => ({ email: s.email, status: s.status, id: s._id })));
-    }
-    // --- DEBUGGING LOGS END HERE ---
-
-    if (subscribers.length === 0) {
+    } else {
         res.status(400);
         throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
     }
@@ -268,8 +287,8 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
             to: subscriber.email,
             from: process.env.SENDGRID_SENDER_EMAIL,
             subject: campaign.subject,
-            html: campaign.htmlContent,
-            text: campaign.plainTextContent || '',
+            html: campaign.htmlContent, // This will be used if hasHtmlContent is true
+            text: campaign.plainTextContent || '', // This will be used as fallback or alongside HTML
             custom_args: customArgs,
             trackingSettings: {
                 clickTracking: {
@@ -285,7 +304,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 
     try {
         const [response] = await sgMail.send(messages);
-        console.log('SendGrid API Response:', response.statusCode);
+        console.log('SendGrid API Response Status Code:', response.statusCode);
 
         if (response.statusCode >= 200 && response.statusCode < 300) {
             successfulSends = messages.length;
