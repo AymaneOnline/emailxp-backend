@@ -8,21 +8,20 @@ const {
     updateCampaign,
     deleteCampaign,
     sendCampaign: sendCampaignManually, // Renamed for clarity in controller import
-    getCampaignOpenStats,
-    getCampaignClickStats,
+    // REMOVED: getCampaignOpenStats, getCampaignClickStats as they are no longer in campaignController.js
     getDashboardStats,
     getCampaignAnalytics,
-    handleSendGridWebhook, // <--- NEW IMPORT: Import the new webhook handler
+    // REMOVED: handleSendGridWebhook as it is now in trackingController.js
 } = require('../controllers/campaignController');
 
-// All campaign routes are protected
+// All campaign routes are protected (except external webhooks which are handled elsewhere)
 
 // --- IMPORTANT: Place more specific routes BEFORE more general ones ---
 
 // Dashboard Analytics (overall)
 router.get('/dashboard-stats', protect, getDashboardStats);
 
-// Campaign Specific Analytics - NEW ROUTE
+// Campaign Specific Analytics - This is the consolidated analytics route
 router.get('/:id/analytics', protect, getCampaignAnalytics);
 
 router.route('/')
@@ -36,14 +35,5 @@ router.route('/:id')
 
 // Route for manual campaign sending
 router.post('/:id/send', protect, sendCampaignManually); // Using the renamed function
-
-// Routes for raw tracking statistics
-router.get('/:id/opens', protect, getCampaignOpenStats);
-router.get('/:id/clicks', protect, getCampaignClickStats);
-
-// --- NEW ROUTE FOR SENDGRID WEBHOOKS ---
-// This route should NOT be protected by 'protect' middleware
-// SendGrid will POST event data to this URL
-router.post('/webhooks/sendgrid', handleSendGridWebhook); // <--- ADDED ROUTE
 
 module.exports = router;
