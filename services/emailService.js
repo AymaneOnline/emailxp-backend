@@ -4,7 +4,7 @@
 console.log('!!!!!!!!!!! emailService.js FILE HAS BEEN PARSED AND LOADED !!!!!!!!!!!');
 
 const sgMail = require('@sendgrid/mail');
-const cheerio = require('cheerio');
+// Removed cheerio as it's no longer needed for URL rewriting
 const { convert } = require('html-to-text'); // Make sure html-to-text is installed (npm install html-to-text)
 
 // Add this line right after the 'require' statements
@@ -12,37 +12,15 @@ console.log('!!!!!!!!!!! All dependencies for emailService.js have been loaded !
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
+// BACKEND_TRACKING_BASE_URL is no longer directly used for embedding,
+// but might still be useful for other API calls or reference. Keeping for now.
 const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-backend-production.up.railway.app';
 
 
-/**
- * Rewrites URLs in HTML content to include click tracking.
- * @param {string} htmlContent The original HTML content of the email.
- * @param {string} campaignId The ID of the campaign.
- * @param {string} subscriberId The ID of the subscriber (or a unique identifier for the recipient).
- * @returns {string} The HTML content with rewritten URLs.
- */
-const rewriteUrlsForTracking = (htmlContent, campaignId, subscriberId) => {
-    console.log(`[EmailService] Rewriting URLs for campaign: ${campaignId}, subscriber: ${subscriberId}`);
-    const $ = cheerio.load(htmlContent);
-
-    $('a').each((index, element) => {
-        const originalHref = $(element).attr('href');
-
-        // Only rewrite if it's a full URL and not already a tracking URL
-        if (originalHref && (originalHref.startsWith('http://') || originalHref.startsWith('https://')) && !originalHref.includes('/api/track/click')) {
-            const encodedOriginalUrl = encodeURIComponent(originalHref);
-            const trackingUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/click/${campaignId}/${subscriberId}?url=${encodedOriginalUrl}`;
-            $(element).attr('href', trackingUrl);
-            console.log(`[EmailService] Rewritten link from ${originalHref} to ${trackingUrl}`);
-        }
-    });
-
-    return $.html();
-};
+// Removed rewriteUrlsForTracking function entirely, as SendGrid will handle click tracking via its own settings.
 
 
-const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
+const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId, listId) => {
     console.log(`[EmailService] Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}`);
 
     // --- ADDED LOGS FOR DEBUGGING ---
@@ -51,16 +29,8 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     console.log(`[DEBUG] Received plainTextContent length: ${plainTextContent ? plainTextContent.length : 'N/A'}`);
     // --- END ADDED LOGS ---
 
+    // No need for finalHtmlContent modification here; SendGrid will do its own tracking.
     let finalHtmlContent = htmlContent;
-    if (campaignId && subscriberId) {
-        finalHtmlContent = rewriteUrlsForTracking(htmlContent, campaignId, subscriberId);
-    }
-
-    // Add tracking pixel for open tracking
-    const trackingPixelUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/open/${campaignId}/${subscriberId}`;
-    const trackingPixel = `<img src="${trackingPixelUrl}" alt="" width="1" height="1" style="display:none !important; min-height:1px; width:1px; border-width:0; margin-top:0; margin-bottom:0; margin-right:0; margin-left:0; padding-top:0; padding-bottom:0; padding-right:0; padding-left:0;" />`;
-
-    finalHtmlContent = finalHtmlContent + trackingPixel;
 
     // --- NEW LOGIC: Generate plainTextContent if it's empty (with robust fallbacks) ---
     let finalPlainTextContent = plainTextContent;
@@ -70,7 +40,7 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
         console.log('[DEBUG] plainTextContent is empty or whitespace. Attempting to convert HTML to plain text...');
         try {
-            // Ensure html-to-text conversion happens on finalHtmlContent (which includes tracking pixel)
+            // Convert HTML to plain text
             finalPlainTextContent = convert(finalHtmlContent, {
                 wordwrap: 130, // Wrap lines for readability
                 selectors: [
@@ -111,7 +81,14 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         from: process.env.SENDGRID_SENDER_EMAIL,
         subject: subject,
         html: finalHtmlContent,
-        text: finalPlainTextContent, // Use the potentially generated plain text content
+        text: finalPlainTextContent,
+        // --- ADDED custom_args FOR WEBHOOK TRACKING ---
+        custom_args: {
+            campaignId: campaignId,
+            subscriberId: subscriberId,
+            listId: listId // Now correctly passed from scheduler
+        }
+        // --- END custom_args ---
     };
 
     console.log(`[EmailService] Message object prepared for SendGrid (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);

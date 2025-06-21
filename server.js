@@ -9,8 +9,8 @@ const userRoutes = require('./routes/userRoutes');
 const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
-const trackingRoutes = require('./routes/trackingRoutes');
-const templateRoutes = require('./routes/templateRoutes'); // <--- ADDED: Import template routes
+const trackingRoutes = require('./routes/trackingRoutes'); // This line should remain for the SendGrid webhook and unsubscribe.
+const templateRoutes = require('./routes/templateRoutes'); 
 
 // --- ADDED: Import the campaign scheduler ---
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
@@ -24,8 +24,8 @@ connectDB();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json()); // For parsing application/json
+app.use(express.urlencoded({ extended: false })); // For parsing application/x-www-form-urlencoded
 
 // Basic Route for testing
 app.get('/', (req, res) => {
@@ -41,10 +41,10 @@ app.use('/api/campaigns', campaignRoutes);
 app.use('/api/lists/:listId/subscribers', subscriberRoutes);
 // --- END NEW
 
-app.use('/api/track', trackingRoutes); // Existing new tracking routes
-app.use('/api/templates', templateRoutes); // <--- ADDED: Use template routes
+app.use('/api/track', trackingRoutes); // Existing tracking routes, now primarily for webhooks and unsubscribe.
+app.use('/api/templates', templateRoutes); // Use template routes
 
-// Error Handling Middleware (Keep this from previous step)
+// Error Handling Middleware
 app.use((err, req, res, next) => {
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
     res.status(statusCode);
@@ -62,5 +62,3 @@ app.listen(PORT, () => {
     startCampaignScheduler();
     // --- END ADDED ---
 });
-
-//add
