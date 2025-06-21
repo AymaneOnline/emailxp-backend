@@ -51,29 +51,44 @@ const campaignSchema = mongoose.Schema(
             default: null,
         },
         // --- NEW FIELD: To store the count of successfully sent emails for a campaign ---
-        emailsSuccessfullySent: {
+        emailsSuccessfullySent: { // This field seems to be redundant with emailsSent in campaignController
             type: Number,
             default: 0,
         },
-        // --- END NEW FIELD ---
+        // --- Added fields for direct tracking counts ---
+        opens: {
+            type: Number,
+            default: 0,
+        },
+        clicks: {
+            type: Number,
+            default: 0,
+        },
+        bouncedCount: {
+            type: Number,
+            default: 0,
+        },
+        unsubscribedCount: {
+            type: Number,
+            default: 0,
+        },
+        complaintCount: {
+            type: Number,
+            default: 0,
+        },
+        totalRecipients: { // To store the count of subscribers targetted by the campaign send
+            type: Number,
+            default: 0,
+        },
+        // --- End of tracking fields ---
     },
     {
         timestamps: true,
     }
 );
 
-// --- Pre-delete hook to cascade delete related events ---
-campaignSchema.pre('deleteOne', { document: true, query: false }, async function(next) {
-    console.log(`[Mongoose Pre-Delete] Deleting associated OpenEvent and ClickEvent documents for Campaign: ${this._id}`);
-
-    const OpenEvent = mongoose.model('OpenEvent');
-    const ClickEvent = mongoose.model('ClickEvent');
-
-    await OpenEvent.deleteMany({ campaign: this._id });
-    await ClickEvent.deleteMany({ campaign: this._id });
-
-    console.log(`[Mongoose Pre-Delete] Associated events deleted for Campaign: ${this._id}`);
-    next();
-});
+// REMOVED: The pre('deleteOne') hook for OpenEvent and ClickEvent
+// because these models do not exist and their counts are stored directly on the Campaign model.
+// When a Campaign is deleted, its fields (including opens, clicks, etc.) are also deleted.
 
 module.exports = mongoose.model('Campaign', campaignSchema);
