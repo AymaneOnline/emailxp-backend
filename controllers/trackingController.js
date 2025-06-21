@@ -1,97 +1,147 @@
 // emailxp/backend/controllers/trackingController.js
-const asyncHandler = require('express-async-handler');
-const mongoose = require('mongoose');
-const OpenEvent = require('../models/OpenEvent');
-const ClickEvent = require('../models/ClickEvent'); // --- NEW: Import ClickEvent model ---
 
-// A 1x1 transparent GIF image, base64 encoded.
-const transparentGif = Buffer.from(
-    'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
-    'base64'
-);
+const Subscriber = require('../models/Subscriber');
+const Campaign = require('../models/Campaign'); // Assuming you might update campaign stats
 
-// @desc    Track email open
-// @route   GET /api/track/open/:campaignId/:subscriberId
-// @access  Public
-const trackOpen = asyncHandler(async (req, res) => {
-    const { campaignId, subscriberId } = req.params;
+// Basic logger (copied from campaignScheduler.js for consistency, or use a centralized one)
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const logger = {
+    log: (...args) => { if (!IS_PRODUCTION) { console.log(...args); } },
+    warn: (...args) => { console.warn(...args); },
+    error: (...args) => { console.error(...args); }
+};
 
-    res.set('Content-Type', 'image/gif');
-    res.send(transparentGif);
+/**
+ * @desc Handle SendGrid Webhook events (processed, delivered, open, click, bounce, etc.)
+ * This endpoint receives event data from SendGrid.
+ * It's crucial to set up this URL in your SendGrid account under Settings > Mail Settings > Event Webhook.
+ * DO NOT send a 200 OK response until you have successfully processed the event, or SendGrid will retry.
+ */
+exports.handleWebhook = async (req, res) => {
+    logger.log('[Webhook] Received SendGrid events:', req.body.length, 'events');
 
-    try {
-        if (!mongoose.Types.ObjectId.isValid(campaignId) || !mongoose.Types.ObjectId.isValid(subscriberId)) {
-            console.error(`Tracking Error: Invalid Campaign ID (${campaignId}) or Subscriber ID (${subscriberId}) provided for open tracking.`);
-            return;
+    // SendGrid sends an array of events
+    for (const event of req.body) {
+        logger.log(`[Webhook] Processing event: ${event.event} for ${event.email}, Campaign ID: ${event.campaignId}, Subscriber ID: ${event.subscriberId}, List ID: ${event.listId}`);
+
+        // Extract custom arguments
+        const { campaignId, subscriberId, listId } = event.custom_args || {}; // Access custom_args here!
+
+        // Basic validation for required IDs from custom_args
+        if (!campaignId || !subscriberId || !listId) {
+            logger.warn(`[Webhook] Missing custom_args for event type ${event.event}. Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}. Skipping processing for this event.`);
+            // Continue to the next event, but don't fail the whole request
+            continue; 
         }
 
-        await OpenEvent.create({
-            campaign: campaignId,
-            subscriber: subscriberId,
-        });
-
-        console.log(`Email Open Tracked: Campaign ID ${campaignId}, Subscriber ID ${subscriberId}`);
-
-    } catch (error) {
-        console.error(`Error saving open event for Campaign ${campaignId}, Subscriber ${subscriberId}:`, error);
-    }
-});
-
-// @desc    Track email click
-// @route   GET /api/track/click/:campaignId/:subscriberId?url=<originalUrl>
-// @access  Public (This route is hit by email clients, so it must be public)
-const trackClick = asyncHandler(async (req, res) => {
-    const { campaignId, subscriberId } = req.params;
-    const { url: originalUrl } = req.query; // Get the original URL from query parameters
-
-    // --- IMPORTANT: Redirect the user immediately to the original URL ---
-    // This is crucial for a good user experience. The database operation happens in the background.
-    if (originalUrl) {
-        // Ensure the URL is fully qualified and secure if possible
         try {
-            const decodedUrl = decodeURIComponent(originalUrl); // Decode the URL
-            // Basic validation for URL format
-            if (!decodedUrl.startsWith('http://') && !decodedUrl.startsWith('https://')) {
-                // Prepend https:// if not present for safer redirection, or handle as error
-                res.redirect(`https://${decodedUrl}`);
-            } else {
-                res.redirect(decodedUrl);
+            const subscriber = await Subscriber.findById(subscriberId);
+            if (!subscriber) {
+                logger.warn(`[Webhook] Subscriber with ID ${subscriberId} not found for list ${listId}. Skipping event.`);
+                continue;
             }
+
+            const campaign = await Campaign.findById(campaignId);
+            if (!campaign) {
+                logger.warn(`[Webhook] Campaign with ID ${campaignId} not found for subscriber ${subscriberId}. Skipping event.`);
+                continue;
+            }
+
+            switch (event.event) {
+                case 'processed':
+                    // Email successfully queued by SendGrid
+                    logger.log(`[Webhook] Email processed for ${event.email}`);
+                    // You might want to update a 'processed' count on the campaign if needed
+                    break;
+                case 'delivered':
+                    // Email successfully delivered to recipient's server
+                    logger.log(`[Webhook] Email delivered to ${event.email}`);
+                    // You might update a delivery status or count
+                    break;
+                case 'open':
+                    // Recipient opened the email (pixel fired)
+                    logger.log(`[Webhook] Email opened by ${event.email}`);
+                    // Increment open count for campaign
+                    await Campaign.findByIdAndUpdate(campaignId, { $inc: { opens: 1 } });
+                    // Mark email as opened for this subscriber/campaign instance (if you track per email)
+                    break;
+                case 'click':
+                    // Recipient clicked a link in the email
+                    logger.log(`[Webhook] Link clicked by ${event.email} for URL: ${event.url}`);
+                    // Increment click count for campaign
+                    await Campaign.findByIdAndUpdate(campaignId, { $inc: { clicks: 1 } });
+                    // You might also track which specific URL was clicked
+                    break;
+                case 'bounce':
+                    // Email bounced (soft or hard)
+                    logger.log(`[Webhook] Email bounced for ${event.email}. Reason: ${event.reason}, Status: ${event.status}`);
+                    // Update subscriber status to 'bounced' or 'unsubscribed' depending on bounce type
+                    if (event.type === 'hardbounce') {
+                        await Subscriber.findByIdAndUpdate(subscriberId, { status: 'bounced' });
+                    }
+                    // You might update a bounce count on the campaign
+                    break;
+                case 'unsubscribe':
+                    // Recipient clicked an unsubscribe link (from SendGrid's automatically added links if enabled)
+                    logger.log(`[Webhook] Subscriber ${event.email} unsubscribed via SendGrid webhook.`);
+                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
+                    break;
+                case 'spamreport':
+                    // Recipient marked email as spam
+                    logger.log(`[Webhook] Subscriber ${event.email} reported spam.`);
+                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' }); // Mark as unsubscribed or spam
+                    break;
+                // Add more cases for other event types (deferred, dropped etc.) as needed
+                default:
+                    logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
+                    break;
+            }
+
         } catch (error) {
-            console.error(`Tracking Error: Invalid URL for redirection: ${originalUrl}. Error:`, error);
-            // Fallback: if URL is invalid, redirect to a default safe page or show an error.
-            res.status(400).send('Invalid URL for tracking');
-            return; // Stop processing
+            logger.error(`[Webhook Error] Failed to process event for ${event.email}, type ${event.event}:`, error);
+            // Don't send 500 here, as SendGrid will retry the entire batch.
+            // Just log and continue.
         }
-    } else {
-        res.status(400).send('Missing URL for tracking');
-        return; // Stop processing
     }
 
-    // --- Log the click event asynchronously after sending the response ---
+    // Always send a 200 OK after processing all events to tell SendGrid not to retry.
+    res.status(200).send('Webhook received and processed');
+};
+
+/**
+ * @desc Handle direct unsubscribe link clicks.
+ * This is for your custom unsubscribe link that you inject into the email content.
+ * Your SendGrid webhook will also catch unsubscribe events if SendGrid automatically adds unsubscribe links.
+ */
+exports.unsubscribe = async (req, res) => {
+    const { subscriberId } = req.params;
+    const { campaignId } = req.query; // If you want to track which campaign they unsubscribed from
+
     try {
-        if (!mongoose.Types.ObjectId.isValid(campaignId) || !mongoose.Types.ObjectId.isValid(subscriberId)) {
-            console.error(`Tracking Error: Invalid Campaign ID (${campaignId}) or Subscriber ID (${subscriberId}) provided for click tracking.`);
-            return;
+        const subscriber = await Subscriber.findById(subscriberId);
+
+        if (!subscriber) {
+            logger.warn(`[Unsubscribe] Subscriber with ID ${subscriberId} not found.`);
+            return res.status(404).send('Subscriber not found.');
         }
 
-        await ClickEvent.create({
-            campaign: campaignId,
-            subscriber: subscriberId,
-            originalUrl: decodeURIComponent(originalUrl), // Store the decoded URL
-            // ipAddress: req.ip,
-            // userAgent: req.headers['user-agent'],
-        });
+        if (subscriber.status === 'unsubscribed') {
+            logger.log(`[Unsubscribe] Subscriber ${subscriber.email} is already unsubscribed.`);
+            return res.status(200).send('You have already unsubscribed.');
+        }
 
-        console.log(`Email Click Tracked: Campaign ID ${campaignId}, Subscriber ID ${subscriberId}, URL: ${originalUrl}`);
+        subscriber.status = 'unsubscribed';
+        await subscriber.save();
 
+        // Optionally, increment an unsubscribe count on the campaign
+        if (campaignId) {
+            await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribes: 1 } });
+        }
+
+        logger.log(`[Unsubscribe] Subscriber ${subscriber.email} (ID: ${subscriberId}) unsubscribed.`);
+        res.status(200).send('You have successfully unsubscribed.'); // Or redirect to a success page
     } catch (error) {
-        console.error(`Error saving click event for Campaign ${campaignId}, Subscriber ${subscriberId}, URL ${originalUrl}:`, error);
-        // Do NOT send another response here, as res.redirect() has already sent the response header.
+        logger.error(`[Unsubscribe Error] Failed to unsubscribe subscriber ${subscriberId}:`, error);
+        res.status(500).send('An error occurred during unsubscribe.');
     }
-});
-
-module.exports = {
-    trackOpen,
-    trackClick, // --- NEW: Export the new trackClick function ---
 };

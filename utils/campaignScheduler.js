@@ -23,12 +23,14 @@ const logger = {
 
 const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
-const List = require('../models/List');
+const List = require('../models/List'); // Ensure List model is imported if you need list details
 const Subscriber = require('../models/Subscriber');
 const { sendEmail } = require('../services/emailService');
-const cheerio = require('cheerio');
+// Removed cheerio as it's no longer directly used for tracking content modification here.
+// If you use cheerio for other purposes in this file, keep it.
+// const cheerio = require('cheerio'); // You can remove this line if it's not used elsewhere.
 
-// BACKEND_URL for unsubscribe links and click tracking
+// BACKEND_URL for unsubscribe links
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 
 
@@ -91,19 +93,25 @@ const executeSendCampaign = async (campaignId) => {
 
                 const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}?campaignId=${campaign._id}`;
 
+                // Append unsubscribe link to HTML and plain text.
+                // SendGrid's native tracking will handle open/click tracking.
                 personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
                 personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
                 logger.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email}`);
 
+                // --- UPDATED sendEmail call to include listId ---
                 const result = await sendEmail(
                     subscriber.email,
                     personalizedSubject,
                     personalizedHtml,
                     personalizedPlain,
                     campaign._id,
-                    subscriber._id
+                    subscriber._id,
+                    campaign.list._id // Pass the list ID here
                 );
+                // --- END UPDATED sendEmail call ---
+
                 logger.log(`[Scheduler] sendEmail for ${subscriber.email} returned:`, result);
                 return result;
             });
@@ -128,7 +136,7 @@ const executeSendCampaign = async (campaignId) => {
 
             campaign.status = successfulSends > 0 ? 'sent' : 'failed';
             campaign.sentAt = new Date();
-            campaign.emailsSuccessfullySent = successfulSends; // <--- ADDED: Update the new field
+            campaign.emailsSuccessfullySent = successfulSends;
             await campaign.save();
 
             logger.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
@@ -137,7 +145,7 @@ const executeSendCampaign = async (campaignId) => {
         } catch (innerSendingError) {
             logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
             campaign.status = 'failed';
-            campaign.emailsSuccessfullySent = successfulSends; // Even on inner error, save current successful count
+            campaign.emailsSuccessfullySent = successfulSends;
             await campaign.save();
             logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
             return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
@@ -148,13 +156,11 @@ const executeSendCampaign = async (campaignId) => {
 
         if (campaignId) {
             try {
-                // Try to update status and any partial successful sends if campaign object was available
                 if (campaign) {
                     campaign.status = 'failed';
                     campaign.emailsSuccessfullySent = successfulSends;
                     await campaign.save();
                 } else {
-                    // Fallback if campaign object itself wasn't found early on
                     await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
                 }
                 logger.log(`[Scheduler] Campaign ${campaignId} status updated to 'failed' due to critical error.`);
