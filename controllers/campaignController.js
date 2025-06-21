@@ -4,21 +4,15 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-const OpenEvent = require('../models/OpenEvent');
-const ClickEvent = require('../models/ClickEvent');
+// REMOVED: OpenEvent and ClickEvent as we are now using webhook-based tracking
+// const OpenEvent = require('../models/OpenEvent');
+// const ClickEvent = require('../models/ClickEvent');
 const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
 
 // Import emailService.js here
-const { sendEmail } = require('../services/emailService'); // <--- ADD THIS LINE
-
-// You are no longer directly using sgMail in this controller for sending campaigns,
-// so you can remove these lines if sendCampaignManually is the only place it was used.
-// If you use sgMail for other purposes (e.g., direct transactional emails not tied to campaigns), keep it.
-// const sgMail = require('@sendgrid/mail');
-// sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-
+const { sendEmail } = require('../services/emailService');
 
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
@@ -53,7 +47,7 @@ const createCampaign = asyncHandler(async (req, res) => {
 
     let finalSubject = subject;
     let finalHtmlContent = htmlContent;
-    let finalPlainTtextContent = plainTextContent; // Keep this variable name consistent for clarity
+    let finalPlainTextContent = plainTextContent; // Keep this variable name consistent for clarity
     let usedTemplateId = null;
 
     if (templateId) {
@@ -65,7 +59,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         usedTemplateId = template._id;
         finalSubject = template.subject;
         finalHtmlContent = template.htmlContent;
-        finalPlainTtextContent = template.plainTextContent || '';
+        finalPlainTextContent = template.plainTextContent || '';
     } else {
         if (!subject || !htmlContent) {
             res.status(400);
@@ -79,7 +73,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         name,
         subject: finalSubject,
         htmlContent: finalHtmlContent,
-        plainTextContent: finalPlainTtextContent,
+        plainTextContent: finalPlainTextContent,
         status: status || 'draft',
         scheduledAt: scheduledAt || null,
         template: usedTemplateId,
@@ -167,7 +161,6 @@ const updateCampaign = asyncHandler(async (req, res) => {
         campaign.plainTextContent = updateFields.plainTextContent !== undefined ? updateFields.plainTextContent : campaign.plainTextContent;
     }
 
-
     // --- CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
     if (updateFields.scheduledAt !== undefined) {
         campaign.scheduledAt = updateFields.scheduledAt;
@@ -186,7 +179,7 @@ const updateCampaign = asyncHandler(async (req, res) => {
         !['sent', 'sending', 'cancelled', 'failed'].includes(campaign.status)) {
         campaign.status = updateFields.status;
     }
-    // --- END CRITICAL LOGIC FOR STATUS AND SCHEDULED_AT ---
+    // --- END CRITICAL LOGIC FOR STATUS AND SCHEDULEED_AT ---
 
     const updatedCampaign = await campaign.save();
 
@@ -293,7 +286,8 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                 personalizedHtml,
                 personalizedPlain, // Pass the personalized content, emailService will handle fallback if still empty
                 campaign._id,
-                subscriber._id
+                subscriber._id,
+                campaign.list._id // Pass the list ID for SendGrid custom_args
             );
 
             console.log(`[DEBUG - CampaignController] sendEmail for ${subscriber.email} returned:`, result);
@@ -341,59 +335,11 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Get Open Statistics for a Specific Campaign
-// @route   GET /api/campaigns/:id/opens
-// @access  Private
-const getCampaignOpenStats = asyncHandler(async (req, res) => {
-    const { id: campaignId } = req.params;
+// REMOVED: getCampaignOpenStats and getCampaignClickStats functions
+// These were relying on the old OpenEvent/ClickEvent models.
+// Analytics are now directly derived from the Campaign model's 'opens' and 'clicks' fields,
+// which are updated by the SendGrid webhook handler.
 
-    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
-        return res.status(400).json({ message: 'Invalid Campaign ID format.' });
-    }
-
-    const campaign = await Campaign.findOne({ _id: campaignId, user: req.user.id });
-
-    if (!campaign) {
-        return res.status(404).json({ message: 'Campaign not found or unauthorized.' });
-    }
-
-    const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
-    const uniqueOpens = (await OpenEvent.distinct('subscriber', { campaign: campaignId })).length;
-
-    res.status(200).json({
-        campaignId: campaignId,
-        totalOpens: totalOpens,
-        uniqueOpens: uniqueOpens,
-    });
-});
-
-// @desc    Get click statistics for a campaign
-// @route   GET /api/campaigns/:id/clicks
-// @access  Private
-const getCampaignClickStats = asyncHandler(async (req, res) => {
-    const { id: campaignId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
-        return res.status(400).json({ message: 'Invalid Campaign ID format.' });
-    }
-
-    const campaign = await Campaign.findById(campaignId);
-    if (!campaign) {
-        return res.status(404).json({ message: 'Campaign not found.' });
-    }
-    if (campaign.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'Not authorized to view stats for this campaign.' });
-    }
-
-    const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
-    const uniqueClicks = (await ClickEvent.distinct('subscriber', { campaign: campaignId })).length;
-
-    res.status(200).json({
-        campaignId: campaignId,
-        totalClicks,
-        uniqueClicks
-    });
-});
 
 // @desc    Get aggregate dashboard statistics for the authenticated user
 // @route   GET /api/campaigns/dashboard-stats
@@ -529,79 +475,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 });
 // --- END NEW ---
 
-// @desc    Handle SendGrid Event Webhooks
-// @route   POST /api/campaigns/webhooks/sendgrid
-// @access  Public (called by SendGrid)
-const handleSendGridWebhook = asyncHandler(async (req, res) => {
-    const events = req.body;
-    console.log(`[Webhook] Received SendGrid events: ${events.length} events`);
-
-    for (const event of events) {
-        try {
-            const email = event.email;
-            const eventType = event.event;
-            const campaignId = event.campaign_id;
-            const subscriberId = event.subscriber_id;
-            const listId = event.list_id;
-
-            console.log(`[Webhook] Processing event: ${eventType} for ${email}, Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}`);
-
-            const subscriber = await Subscriber.findOne({ _id: subscriberId, list: listId });
-
-            if (!subscriber) {
-                console.log(`[Webhook] Subscriber with ID ${subscriberId} not found for list ${listId}. Skipping event.`);
-                continue;
-            }
-
-            let campaign = null;
-            if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
-                campaign = await Campaign.findById(campaignId);
-            } else {
-                console.log(`[Webhook] Invalid or missing campaignId for event: ${JSON.stringify(event)}. Campaign stats will not be updated.`);
-            }
-
-            switch (eventType) {
-                case 'bounce':
-                    subscriber.status = 'bounced';
-                    if (campaign) campaign.bouncedCount = (campaign.bouncedCount || 0) + 1;
-                    console.log(`[Webhook] Subscriber ${email} marked as bounced.`);
-                    break;
-                case 'spamreport':
-                    subscriber.status = 'complaint';
-                    if (campaign) campaign.complaintCount = (campaign.complaintCount || 0) + 1;
-                    console.log(`[Webhook] Subscriber ${email} marked as spam complaint.`);
-                    break;
-                case 'unsubscribe':
-                    subscriber.status = 'unsubscribed';
-                    if (campaign) campaign.unsubscribedCount = (campaign.unsubscribedCount || 0) + 1;
-                    console.log(`[Webhook] Subscriber ${email} marked as unsubscribed.`);
-                    break;
-                case 'click':
-                    if (campaign) campaign.clicks = (campaign.clicks || 0) + 1;
-                    console.log(`[Webhook] Subscriber ${email} clicked.`);
-                    break;
-                case 'open':
-                    if (campaign) campaign.opens = (campaign.opens || 0) + 1;
-                    console.log(`[Webhook] Subscriber ${email} opened.`);
-                    break;
-                case 'delivered':
-                    console.log(`[Webhook] Email to ${email} delivered.`);
-                    break;
-                default:
-                    console.log(`[Webhook] Unhandled event type: ${eventType}`);
-                    break;
-            }
-
-            await subscriber.save();
-            if (campaign) await campaign.save();
-
-        } catch (error) {
-            console.error(`[Webhook Error] Failed to process event: ${JSON.stringify(event)}. Error: ${error.message}`);
-        }
-    }
-
-    res.status(200).send('Event Webhook received');
-});
+// REMOVED: handleSendGridWebhook function from here.
+// This logic now resides in emailxp/backend/controllers/trackingController.js
+// which is mounted at /api/track/webhook in server.js.
 
 module.exports = {
     getCampaigns,
@@ -610,9 +486,8 @@ module.exports = {
     updateCampaign,
     deleteCampaign,
     sendCampaign: sendCampaignManually, // Export the refactored function
-    getCampaignOpenStats,
-    getCampaignClickStats,
+    // REMOVED exports for getCampaignOpenStats and getCampaignClickStats
     getDashboardStats,
     getCampaignAnalytics,
-    handleSendGridWebhook,
+    // REMOVED export for handleSendGridWebhook
 };
