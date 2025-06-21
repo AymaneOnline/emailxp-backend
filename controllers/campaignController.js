@@ -4,9 +4,11 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-// REMOVED: OpenEvent and ClickEvent as we are now using webhook-based tracking
+
+// REMOVED: OpenEvent and ClickEvent imports as these models do not exist
 // const OpenEvent = require('../models/OpenEvent');
 // const ClickEvent = require('../models/ClickEvent');
+
 const Template = require('../models/Template');
 
 const mongoose = require('mongoose');
@@ -202,6 +204,8 @@ const deleteCampaign = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to delete this campaign');
     }
 
+    // REMOVED: Deletion of OpenEvent and ClickEvent records
+    // since these models do not exist and analytics are stored directly on Campaign model.
     await campaign.deleteOne();
 
     res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
@@ -462,9 +466,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         sentAt: campaign.lastSentAt,
         totalEmailsSent,
         totalOpens,
-        uniqueOpens,
+        totalOpens, // assuming uniqueOpens for now as you had it as totalOpens in your example
         totalClicks,
-        uniqueClicks,
+        uniqueClicks, // assuming uniqueClicks for now as you had it as totalClicks in your example
         openRate,
         clickRate,
         clickThroughRate,
