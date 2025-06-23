@@ -27,6 +27,12 @@ exports.verifyWebhookSignature = (req, res, next) => {
     // req.rawBody is captured by the middleware added in server.js
     const payload = req.rawBody; 
 
+    // --- ADDED DEBUG LOGS HERE ---
+    logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signature}" (type: ${typeof signature})`);
+    logger.log(`[DEBUG - Webhook Verify] Timestamp Header: "${timestamp}" (type: ${typeof timestamp})`);
+    logger.log(`[DEBUG - Webhook Verify] Raw Body Content (first 100 chars): "${payload ? payload.substring(0, Math.min(payload.length, 100)) : 'N/A'}" (type: ${typeof payload}, length: ${payload ? payload.length : 'N/A'})`);
+    // --- END DEBUG LOGS ---
+
     if (!signature || !timestamp || !payload) {
         logger.error('[Webhook Verification] Missing signature, timestamp, or raw body. Rejecting webhook.');
         // If rawBody is missing, it implies the server.js middleware didn't run or failed.
