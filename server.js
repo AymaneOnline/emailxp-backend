@@ -2,6 +2,10 @@
 
 require('dotenv').config();
 
+// --- ADD THIS LINE FOR DEBUGGING ---
+console.log(`[DEBUG - Env Check] SENDGRID_WEBHOOK_SECRET from process.env: "${process.env.SENDGRID_WEBHOOK_SECRET}"`);
+// --- END DEBUG ---
+
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
