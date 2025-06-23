@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@sendgrid/eventwebhook": "^8.0.0",
     "@sendgrid/mail": "^8.1.5",
     "bcryptjs": "^3.0.2",
     "cheerio": "^1.1.0",

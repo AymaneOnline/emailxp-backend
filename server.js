@@ -9,12 +9,10 @@ const userRoutes = require('./routes/userRoutes');
 const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
-const trackingRoutes = require('./routes/trackingRoutes'); // This line should remain for the SendGrid webhook and unsubscribe.
+const trackingRoutes = require('./routes/trackingRoutes');
 const templateRoutes = require('./routes/templateRoutes'); 
 
-// --- ADDED: Import the campaign scheduler ---
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
-// --- END ADDED ---
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -24,6 +22,26 @@ connectDB();
 
 // Middleware
 app.use(cors());
+
+// --- MODIFICATION FOR SENDGRID WEBHOOK RAW BODY ---
+// This middleware MUST come BEFORE express.json() and express.urlencoded()
+// and specifically before the webhook route is hit.
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/track/webhook') { // Only apply to webhook route
+        let data = '';
+        req.on('data', chunk => {
+            data += chunk;
+        });
+        req.on('end', () => {
+            req.rawBody = data;
+            next();
+        });
+    } else {
+        next();
+    }
+});
+// --- END MODIFICATION ---
+
 app.use(express.json()); // For parsing application/json
 app.use(express.urlencoded({ extended: false })); // For parsing application/x-www-form-urlencoded
 
@@ -37,9 +55,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/lists', listRoutes);
 app.use('/api/campaigns', campaignRoutes);
 
-// --- NEW: Add the subscriber routes, nested under /api/lists/:listId
 app.use('/api/lists/:listId/subscribers', subscriberRoutes);
-// --- END NEW
 
 app.use('/api/track', trackingRoutes); // Existing tracking routes, now primarily for webhooks and unsubscribe.
 app.use('/api/templates', templateRoutes); // Use template routes
@@ -54,11 +70,7 @@ app.use((err, req, res, next) => {
     });
 });
 
-
-// Start the server
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    // --- ADDED: Start the campaign scheduler here ---
     startCampaignScheduler();
-    // --- END ADDED ---
 });
