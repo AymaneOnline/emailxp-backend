@@ -5,9 +5,9 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const Template = require('../models/Template');
-const OpenEvent = require('../models/OpenEvent');
-const ClickEvent = require('../models/ClickEvent');
-const mongoose = require('mongoose');
+const OpenEvent = require('../models/OpenEvent'); // Added import
+const ClickEvent = require('../models/ClickEvent'); // Added import
+const mongoose = require('mongoose'); // Make sure mongoose is imported for ObjectId
 
 const { sendEmail } = require('../services/emailService');
 
@@ -441,7 +441,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/analytics
 // @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
-    const { id: campaignId } = req.params;
+    const { id: campaignId } = req.params; // Destructure and rename id to campaignId for clarity
 
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         res.status(400);
@@ -467,7 +467,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         // Calculate Unique Opens
         const uniqueOpens = await OpenEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
-            { $group: { _id: '$subscriber' } },
+            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
             { $count: 'uniqueCount' }
         ]);
         const uniqueOpensCount = uniqueOpens.length > 0 ? uniqueOpens[0].uniqueCount : 0;
@@ -478,7 +478,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         // Calculate Unique Clicks
         const uniqueClicks = await ClickEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
-            { $group: { _id: '$subscriber' } },
+            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
             { $count: 'uniqueCount' }
         ]);
         const uniqueClicksCount = uniqueClicks.length > 0 ? uniqueClicks[0].uniqueCount : 0;
@@ -490,24 +490,167 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 
         res.status(200).json({
             campaignId: campaignId,
-            name: campaign.name,
-            emailsSent: emailsSent,
+            name: campaign.name, // Include campaign name for context
+            emailsSent: emailsSent, // Number of emails attempted to send
             totalOpens: totalOpens,
             uniqueOpens: uniqueOpensCount,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicksCount,
+            // You can add other stats from campaign model if relevant and updated
             bounced: campaign.bouncedCount || 0,
             unsubscribed: campaign.unsubscribedCount || 0,
             complaints: campaign.complaintCount || 0,
             status: campaign.status,
             lastSentAt: campaign.lastSentAt,
-            openRate: openRate,
-            clickRate: clickRate
+            openRate: openRate, // Calculated from unique opens
+            clickRate: clickRate // Calculated from unique clicks
         });
 
     } catch (error) {
         console.error(`Error fetching analytics for campaign ${campaignId}:`, error);
         res.status(500).json({ message: 'Error fetching campaign analytics', error: error.message });
+    }
+});
+
+
+// @desc    Get time-series analytics (daily/weekly opens and clicks) for a specific campaign
+// @route   GET /api/campaigns/:id/analytics/time-series?period=daily || weekly
+// @access  Private
+const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
+    const { id: campaignId } = req.params;
+    const { period = 'daily' } = req.query; // Default to daily, can be 'weekly'
+
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        res.status(400);
+        throw new Error('Invalid campaign ID');
+    }
+
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to view analytics for this campaign');
+    }
+
+    try {
+        let groupByFormat;
+        if (period === 'weekly') {
+            // Group by year and week number
+            groupByFormat = {
+                year: { $year: '$timestamp' },
+                week: { $week: '$timestamp' }
+            };
+        } else { // default to daily
+            // Group by year, month, day
+            groupByFormat = {
+                year: { $year: '$timestamp' },
+                month: { $month: '$timestamp' },
+                day: { $dayOfMonth: '$timestamp' }
+            };
+        }
+
+        // Aggregate Open Events
+        const opensTimeSeries = await OpenEvent.aggregate([
+            { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
+            {
+                $group: {
+                    _id: groupByFormat,
+                    count: { $sum: 1 },
+                    // Get the first timestamp for sorting and date reconstruction
+                    firstTimestamp: { $min: '$timestamp' }
+                }
+            },
+            { $sort: { 'firstTimestamp': 1 } }, // Sort by date
+            {
+                $project: {
+                    _id: 0,
+                    date: {
+                        $cond: {
+                            if: { $eq: [period, 'weekly'] },
+                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } // YYYY-MM-DD
+                        }
+                    },
+                    count: 1
+                }
+            }
+        ]);
+
+        // Aggregate Click Events
+        const clicksTimeSeries = await ClickEvent.aggregate([
+            { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
+            {
+                $group: {
+                    _id: groupByFormat,
+                    count: { $sum: 1 },
+                     // Get the first timestamp for sorting and date reconstruction
+                    firstTimestamp: { $min: '$timestamp' }
+                }
+            },
+            { $sort: { 'firstTimestamp': 1 } }, // Sort by date
+            {
+                $project: {
+                    _id: 0,
+                    date: {
+                        $cond: {
+                            if: { $eq: [period, 'weekly'] },
+                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } // YYYY-MM-DD
+                        }
+                    },
+                    count: 1
+                }
+            }
+        ]);
+
+        // Combine opens and clicks into a single time-series array
+        const combinedData = {};
+
+        opensTimeSeries.forEach(item => {
+            combinedData[item.date] = {
+                date: item.date,
+                opens: item.count,
+                clicks: 0
+            };
+        });
+
+        clicksTimeSeries.forEach(item => {
+            if (combinedData[item.date]) {
+                combinedData[item.date].clicks = item.count;
+            } else {
+                combinedData[item.date] = {
+                    date: item.date,
+                    opens: 0,
+                    clicks: item.count
+                };
+            }
+        });
+
+        // Convert to array and sort by date again to ensure correct order
+        const timeSeries = Object.values(combinedData).sort((a, b) => {
+            if (period === 'weekly') {
+                // Custom sort for YYYY-WVV format
+                const [yearA, weekA] = a.date.split('-W').map(Number);
+                const [yearB, weekB] = b.date.split('-W').map(Number);
+                if (yearA !== yearB) return yearA - yearB;
+                return weekA - weekB;
+            } else {
+                // Standard date string comparison
+                return new Date(a.date) - new Date(b.date);
+            }
+        });
+
+
+        res.status(200).json(timeSeries);
+
+    } catch (error) {
+        console.error(`Error fetching time-series analytics for campaign ${campaignId}:`, error);
+        res.status(500).json({ message: 'Error fetching time-series analytics', error: error.message });
     }
 });
 
@@ -521,4 +664,5 @@ module.exports = {
     sendCampaign: sendCampaignManually,
     getDashboardStats,
     getCampaignAnalytics,
+    getCampaignAnalyticsTimeSeries, // Export the new function
 };
