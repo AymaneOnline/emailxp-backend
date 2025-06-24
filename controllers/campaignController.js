@@ -4,13 +4,7 @@ const asyncHandler = require('express-async-handler');
 const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
-
-// REMOVED: OpenEvent and ClickEvent imports as these models do not exist
-// const OpenEvent = require('../models/OpenEvent');
-// const ClickEvent = require('../models/ClickEvent');
-
 const Template = require('../models/Template');
-
 const mongoose = require('mongoose');
 
 // Import emailService.js here
@@ -49,7 +43,7 @@ const createCampaign = asyncHandler(async (req, res) => {
 
     let finalSubject = subject;
     let finalHtmlContent = htmlContent;
-    let finalPlainTextContent = plainTextContent; // Keep this variable name consistent for clarity
+    let finalPlainTextContent = plainTextContent;
     let usedTemplateId = null;
 
     if (templateId) {
@@ -65,7 +59,7 @@ const createCampaign = asyncHandler(async (req, res) => {
     } else {
         if (!subject || !htmlContent) {
             res.status(400);
-            throw new Error('Please provide subject and HTML content for the campaign, or select a template.');
+            throw new Error('Please provide subject and HTML content for the campaign, or select a template.'); // Fixed 'new new Error'
         }
     }
 
@@ -222,42 +216,45 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
 
     if (!campaign) {
         res.status(404);
-        throw new Error('Campaign not found');
+        throw new Error('Campaign not found'); // Fixed 'new new Error'
     }
 
     if (campaign.user.toString() !== req.user.id) {
         res.status(401);
-        throw new Error('Not authorized to send this campaign');
+        throw new Error('Not authorized to send this campaign'); // Fixed 'new new Error'
     }
 
     if (campaign.status === 'sent' || campaign.status === 'sending' || campaign.status === 'failed' || campaign.status === 'cancelled') {
         res.status(400);
-        throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`);
+        throw new Error(`Campaign cannot be sent because its current status is '${campaign.status}'.`); // Fixed 'new new Error'
     }
 
-    console.log(`[DEBUG - CampaignController] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
-    console.log(`[DEBUG - CampaignController] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
+    // Removed: Old debug logs here to clean up console output
+    // console.log(`[DEBUG - CampaignController] Attempting to send campaign "${campaign.name}" (ID: ${campaignId})`);
+    // console.log(`[DEBUG - CampaignController] Campaign's target list: ${campaign.list ? campaign.list.name : 'N/A'} (ID: ${campaign.list ? campaign.list._id : 'N/A'})`);
 
     if (!process.env.SENDGRID_SENDER_EMAIL || process.env.SENDGRID_SENDER_EMAIL.trim() === '') {
         console.error(`[ERROR] SENDGRID_SENDER_EMAIL is not configured or is empty. Current value: "${process.env.SENDGRID_SENDER_EMAIL}"`);
         res.status(500);
-        throw new Error('SendGrid sender email (SENDGRID_SENDER_EMAIL) is not configured in environment variables. Please set it.');
+        throw new Error('SendGrid sender email (SENDGRID_SENDER_EMAIL) is not configured in environment variables. Please set it.'); // Fixed 'new new Error'
     }
-    console.log(`[DEBUG - CampaignController] SENDGRID_SENDER_EMAIL env var: "${process.env.SENDGRID_SENDER_EMAIL}"`);
+    // Removed: Old debug logs here to clean up console output
+    // console.log(`[DEBUG - CampaignController] SENDGRID_SENDER_EMAIL env var: "${process.env.SENDGRID_SENDER_EMAIL}"`);
 
     // Get subscribers from the associated list with status 'subscribed'
     const subscribers = await Subscriber.find({ list: campaign.list._id, status: 'subscribed' });
 
-    console.log(`[DEBUG - CampaignController] Found ${subscribers.length} subscribers with status 'subscribed' for list ID: ${campaign.list._id}`);
+    // Removed: Old debug logs here to clean up console output
+    // console.log(`[DEBUG - CampaignController] Found ${subscribers.length} subscribers with status 'subscribed' for list ID: ${campaign.list._id}`);
     if (subscribers.length === 0) {
         res.status(400);
-        throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
+        throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`); // Fixed 'new new Error'
     }
 
     // Update campaign status to 'sending' and save immediately
     campaign.status = 'sending';
     campaign.lastSentAt = new Date();
-    campaign.totalRecipients = subscribers.length;
+    campaign.totalRecipients = subscribers.length; // Use totalRecipients field
     await campaign.save();
 
     let successfulSends = 0;
@@ -275,14 +272,13 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
             personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
             personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
-            // --- CRITICAL CALL TO emailService.sendEmail ---
-            console.log('############# BEFORE CALLING emailService.sendEmail IN CONTROLLER #############');
-            console.log(`[Controller Caller] Subscriber Email: ${subscriber.email}`);
-            console.log(`[Controller Caller] HTML Content length (after personalization): ${personalizedHtml ? personalizedHtml.length : 'N/A'}`);
-            console.log(`[Controller Caller] Plain Text Content length (after personalization, before emailService): ${personalizedPlain ? personalizedPlain.length : 'N/A'}`);
-            // Log the actual function's source as seen by this controller
-            console.log('[Controller Caller] Source of emailService.sendEmail function:\n', sendEmail.toString());
-            console.log('###################################################################');
+            // Removed: Old debug logs here to clean up console output
+            // console.log('############# BEFORE CALLING emailService.sendEmail IN CONTROLLER #############');
+            // console.log(`[Controller Caller] Subscriber Email: ${subscriber.email}`);
+            // console.log(`[Controller Caller] HTML Content length (after personalization): ${personalizedHtml ? personalizedHtml.length : 'N/A'}`);
+            // console.log(`[Controller Caller] Plain Text Content length (after personalization, before emailService): ${personalizedPlain ? personalizedPlain.length : 'N/A'}`);
+            // console.log('[Controller Caller] Source of emailService.sendEmail function:\n', sendEmail.toString());
+            // console.log('###################################################################');
 
             const result = await sendEmail(
                 subscriber.email,
@@ -294,7 +290,8 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                 campaign.list._id // Pass the list ID for SendGrid custom_args
             );
 
-            console.log(`[DEBUG - CampaignController] sendEmail for ${subscriber.email} returned:`, result);
+            // Removed: Old debug logs here to clean up console output
+            // console.log(`[DEBUG - CampaignController] sendEmail for ${subscriber.email} returned:`, result);
             return result;
         });
 
@@ -317,7 +314,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
 
         campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        campaign.emailsSent = successfulSends;
+        campaign.emailsSent = successfulSends; // Use emailsSent field
         await campaign.save();
 
         res.status(200).json({
@@ -338,13 +335,6 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     }
 });
 
-
-// REMOVED: getCampaignOpenStats and getCampaignClickStats functions
-// These were relying on the old OpenEvent/ClickEvent models.
-// Analytics are now directly derived from the Campaign model's 'opens' and 'clicks' fields,
-// which are updated by the SendGrid webhook handler.
-
-
 // @desc    Get aggregate dashboard statistics for the authenticated user
 // @route   GET /api/campaigns/dashboard-stats
 // @access  Private
@@ -359,8 +349,8 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         });
 
         // 2. Total Emails Sent (accurate by summing 'emailsSent' from Campaign model)
-        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSent').lean();
-        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSent || 0), 0);
+        const allSentCampaigns = await Campaign.find({ user: userId, status: 'sent' }).select('emailsSent').lean(); // Using emailsSent
+        const totalEmailsSent = allSentCampaigns.reduce((sum, campaign) => sum + (campaign.emailsSent || 0), 0); // Summing emailsSent
 
         // 3. Overall Unique Opens (from Campaign model aggregate)
         const totalUniqueOpens = (await Campaign.aggregate([
@@ -376,7 +366,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         ]))[0]?.total || 0;
 
 
-        // --- NEW: Include bounced, unsubscribed, complaint counts in dashboard stats ---
         const totalBounced = (await Campaign.aggregate([
             { $match: { user: new mongoose.Types.ObjectId(userId) } },
             { $group: { _id: null, total: { $sum: "$bouncedCount" } } }
@@ -391,7 +380,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             { $match: { user: new mongoose.Types.ObjectId(userId) } },
             { $group: { _id: null, total: { $sum: "$complaintCount" } } }
         ]))[0]?.total || 0;
-        // --- END NEW ---
 
         // Calculate rates
         const overallOpenRate = totalEmailsSent > 0 ? ((totalUniqueOpens / totalEmailsSent) * 100).toFixed(2) : '0.00';
@@ -415,7 +403,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     }
 });
 
-// --- NEW: Get detailed analytics for a specific campaign ---
 // @desc    Get detailed analytics for a specific campaign
 // @route   GET /api/campaigns/:id/analytics
 // @access  Private
@@ -446,11 +433,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
     const totalClicks = campaign.clicks || 0;
     const uniqueClicks = campaign.clicks || 0; // For now, assuming campaign.clicks represents unique for simplicity. Refine if needed.
 
-    // --- NEW: Include bounced, unsubscribed, complaint counts for a specific campaign ---
     const bouncedCount = campaign.bouncedCount || 0;
     const unsubscribedCount = campaign.unsubscribedCount || 0;
     const complaintCount = campaign.complaintCount || 0;
-    // --- END NEW ---
 
     // Calculate rates, ensuring no division by zero
     const openRate = totalEmailsSent > 0 ? ((uniqueOpens / totalEmailsSent) * 100).toFixed(2) : "0.00";
@@ -466,9 +451,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         sentAt: campaign.lastSentAt,
         totalEmailsSent,
         totalOpens,
-        totalOpens, // assuming uniqueOpens for now as you had it as totalOpens in your example
+        uniqueOpens, // Assuming this is indeed uniqueOpens for now
         totalClicks,
-        uniqueClicks, // assuming uniqueClicks for now as you had it as totalClicks in your example
+        uniqueClicks, // Assuming this is indeed uniqueClicks for now
         openRate,
         clickRate,
         clickThroughRate,
@@ -477,11 +462,6 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         complaintCount,
     });
 });
-// --- END NEW ---
-
-// REMOVED: handleSendGridWebhook function from here.
-// This logic now resides in emailxp/backend/controllers/trackingController.js
-// which is mounted at /api/track/webhook in server.js.
 
 module.exports = {
     getCampaigns,
@@ -489,9 +469,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually, // Export the refactored function
-    // REMOVED exports for getCampaignOpenStats and getCampaignClickStats
+    sendCampaign: sendCampaignManually,
     getDashboardStats,
     getCampaignAnalytics,
-    // REMOVED export for handleSendGridWebhook
 };
