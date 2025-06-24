@@ -93,23 +93,63 @@ exports.verifyWebhookSignature = (req, res, next) => {
  */
 exports.handleWebhook = async (req, res) => {
     try {
-        logger.log('[Webhook] Received SendGrid webhook request');
+        logger.log('[Webhook] === Webhook Handler Started ===');
+        logger.log('[Webhook] Request method:', req.method);
+        logger.log('[Webhook] Request headers:', JSON.stringify(req.headers, null, 2));
         logger.log('[Webhook] Request body type:', typeof req.body);
         logger.log('[Webhook] Request body:', JSON.stringify(req.body, null, 2));
+        logger.log('[Webhook] Raw body type:', typeof req.rawBody);
+        logger.log('[Webhook] Raw body preview:', req.rawBody?.toString().substring(0, 200));
 
-        // Ensure req.body is an array
-        const events = Array.isArray(req.body) ? req.body : [req.body];
-        
-        if (events.length === 0) {
-            logger.warn('[Webhook] No events found in request body');
-            return res.status(200).json({ message: 'No events to process' });
+        // Handle empty or invalid request body
+        if (!req.body) {
+            logger.warn('[Webhook] Request body is null or undefined');
+            return res.status(200).json({ message: 'Empty webhook received' });
         }
 
-        logger.log(`[Webhook] Processing ${events.length} events`);
-
-        for (const event of events) {
+        // Ensure req.body is an array
+        let events;
+        if (Array.isArray(req.body)) {
+            events = req.body;
+        } else if (typeof req.body === 'object' && req.body !== null) {
+            events = [req.body];
+        } else if (typeof req.body === 'string') {
             try {
-                logger.log(`[Webhook] Processing event: ${event.event} for ${event.email}`);
+                const parsed = JSON.parse(req.body);
+                events = Array.isArray(parsed) ? parsed : [parsed];
+            } catch (parseError) {
+                logger.error('[Webhook] Failed to parse string body as JSON:', parseError);
+                return res.status(200).json({ message: 'Invalid JSON in webhook body' });
+            }
+        } else {
+            logger.warn('[Webhook] Unexpected body type:', typeof req.body);
+            return res.status(200).json({ message: 'Unexpected webhook body format' });
+        }
+        
+        // Filter out null, undefined, or invalid events
+        const validEvents = events.filter(event => {
+            if (!event || typeof event !== 'object') {
+                logger.warn('[Webhook] Skipping invalid event (not an object):', event);
+                return false;
+            }
+            if (!event.event) {
+                logger.warn('[Webhook] Skipping event without event type:', JSON.stringify(event));
+                return false;
+            }
+            return true;
+        });
+
+        if (validEvents.length === 0) {
+            logger.warn('[Webhook] No valid events found in request body');
+            return res.status(200).json({ message: 'No valid events to process' });
+        }
+
+        logger.log(`[Webhook] Processing ${validEvents.length} valid events out of ${events.length} total events`);
+
+        for (let i = 0; i < validEvents.length; i++) {
+            const event = validEvents[i];
+            try {
+                logger.log(`[Webhook] Processing event ${i + 1}/${validEvents.length}: ${event.event} for ${event.email || 'unknown email'}`);
                 
                 // Extract custom arguments with fallback
                 const customArgs = event.custom_args || event.customArgs || {};
@@ -146,7 +186,8 @@ exports.handleWebhook = async (req, res) => {
                 await processWebhookEvent(event, campaign, subscriber, campaignId, subscriberId);
 
             } catch (eventError) {
-                logger.error(`[Webhook Error] Failed to process individual event:`, eventError);
+                logger.error(`[Webhook Error] Failed to process individual event ${i + 1}:`, eventError);
+                logger.error(`[Webhook Error] Event data:`, JSON.stringify(event, null, 2));
                 // Continue processing other events even if one fails
                 continue;
             }
@@ -157,6 +198,7 @@ exports.handleWebhook = async (req, res) => {
 
     } catch (error) {
         logger.error(`[Webhook Error] Failed to process webhook:`, error);
+        logger.error(`[Webhook Error] Stack:`, error.stack);
         // Return 200 to prevent SendGrid from retrying
         res.status(200).json({ message: 'Webhook received with processing error' });
     }
@@ -166,66 +208,85 @@ exports.handleWebhook = async (req, res) => {
  * @desc Process individual webhook events
  */
 async function processWebhookEvent(event, campaign, subscriber, campaignId, subscriberId) {
-    switch (event.event) {
-        case 'open':
-            logger.log(`[Webhook] Email opened by ${event.email}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { opens: 1 } });
-            break;
+    // Safety check - ensure event and event.event exist
+    if (!event || !event.event) {
+        logger.error('[Webhook] Invalid event object - missing event type');
+        return;
+    }
 
-        case 'click':
-            logger.log(`[Webhook] Link clicked by ${event.email}, URL: ${event.url || 'N/A'}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { clicks: 1 } });
-            break;
+    const eventType = event.event;
+    const email = event.email || 'unknown@email.com';
 
-        case 'bounce':
-            logger.log(`[Webhook] Email bounced for ${event.email}, Type: ${event.type}, Reason: ${event.reason || 'N/A'}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { bouncedCount: 1 } });
-            
-            // For hard bounces, mark subscriber as bounced
-            if (event.type === 'hard') {
-                await Subscriber.findByIdAndUpdate(subscriberId, { status: 'bounced' });
-                logger.log(`[Webhook] Subscriber ${subscriberId} marked as bounced due to hard bounce`);
-            }
-            break;
+    logger.log(`[Webhook] Processing ${eventType} event for ${email}`);
 
-        case 'dropped':
-            logger.log(`[Webhook] Email dropped for ${event.email}, Reason: ${event.reason || 'N/A'}`);
-            // Optionally increment a dropped count if you have this field
-            // await Campaign.findByIdAndUpdate(campaignId, { $inc: { droppedCount: 1 } });
-            break;
+    try {
+        switch (eventType) {
+            case 'open':
+                logger.log(`[Webhook] Email opened by ${email}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { opens: 1 } });
+                break;
 
-        case 'spamreport':
-            logger.log(`[Webhook] Spam report from ${event.email}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { complaintCount: 1 } });
-            await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
-            logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed due to spam report`);
-            break;
+            case 'click':
+                logger.log(`[Webhook] Link clicked by ${email}, URL: ${event.url || 'N/A'}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { clicks: 1 } });
+                break;
 
-        case 'unsubscribe':
-            logger.log(`[Webhook] Email unsubscribed by ${event.email}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
-            await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
-            logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed`);
-            break;
+            case 'bounce':
+                logger.log(`[Webhook] Email bounced for ${email}, Type: ${event.type || 'N/A'}, Reason: ${event.reason || 'N/A'}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { bouncedCount: 1 } });
+                
+                // For hard bounces, mark subscriber as bounced
+                if (event.type === 'hard') {
+                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'bounced' });
+                    logger.log(`[Webhook] Subscriber ${subscriberId} marked as bounced due to hard bounce`);
+                }
+                break;
 
-        case 'delivered':
-            logger.log(`[Webhook] Email delivered to ${event.email}`);
-            await Campaign.findByIdAndUpdate(campaignId, { $inc: { deliveredCount: 1 } });
-            break;
+            case 'dropped':
+                logger.log(`[Webhook] Email dropped for ${email}, Reason: ${event.reason || 'N/A'}`);
+                // Optionally increment a dropped count if you have this field
+                // await Campaign.findByIdAndUpdate(campaignId, { $inc: { droppedCount: 1 } });
+                break;
 
-        case 'processed':
-            logger.log(`[Webhook] Email processed by SendGrid for ${event.email}`);
-            // Optionally track processed emails
-            break;
+            case 'spamreport':
+                logger.log(`[Webhook] Spam report from ${email}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { complaintCount: 1 } });
+                await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
+                logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed due to spam report`);
+                break;
 
-        case 'deferred':
-            logger.log(`[Webhook] Email deferred for ${event.email}, Reason: ${event.response || 'N/A'}`);
-            // Optionally track deferred emails
-            break;
+            case 'unsubscribe':
+                logger.log(`[Webhook] Email unsubscribed by ${email}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
+                await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
+                logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed`);
+                break;
 
-        default:
-            logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
-            break;
+            case 'delivered':
+                logger.log(`[Webhook] Email delivered to ${email}`);
+                await Campaign.findByIdAndUpdate(campaignId, { $inc: { deliveredCount: 1 } });
+                break;
+
+            case 'processed':
+                logger.log(`[Webhook] Email processed by SendGrid for ${email}`);
+                // Optionally track processed emails
+                break;
+
+            case 'deferred':
+                logger.log(`[Webhook] Email deferred for ${email}, Reason: ${event.response || 'N/A'}`);
+                // Optionally track deferred emails
+                break;
+
+            default:
+                logger.log(`[Webhook] Unhandled event type: ${eventType} for ${email}`);
+                break;
+        }
+
+        logger.log(`[Webhook] Successfully processed ${eventType} event for ${email}`);
+
+    } catch (dbError) {
+        logger.error(`[Webhook] Database error processing ${eventType} event for ${email}:`, dbError);
+        throw dbError; // Re-throw to be caught by the calling function
     }
 }
 
