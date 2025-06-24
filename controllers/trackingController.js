@@ -5,13 +5,15 @@ const Subscriber = require('../models/Subscriber');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
-const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
+// This needs to be the SendGrid Webhook Public Key (PEM format)
+// Ensure your Railway environment variable SENDGRID_WEBHOOK_SECRET holds this full PEM key.
+const SENDGRID_WEBHOOK_PUBLIC_KEY = process.env.SENDGRID_WEBHOOK_SECRET;
 
 /**
  * @desc Middleware to verify SendGrid webhook signatures
  */
 exports.verifyWebhookSignature = (req, res, next) => {
-    const signature = req.headers['x-twilio-email-event-webhook-signature'];
+    const signatureHeader = req.headers['x-twilio-email-event-webhook-signature'];
     const timestamp = req.headers['x-twilio-email-event-webhook-timestamp'];
     const payload = req.body; // This will be a Buffer from express.raw()
 
@@ -20,16 +22,16 @@ exports.verifyWebhookSignature = (req, res, next) => {
     logger.log(`[DEBUG - Webhook Verify] Request Method: ${req.method}`);
     logger.log(`[DEBUG - Webhook Verify] Content-Type: ${req.headers['content-type']}`);
     logger.log(`[DEBUG - Webhook Verify] Content-Length: ${req.headers['content-length']}`);
-    logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signature}"`);
+    logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signatureHeader}"`);
     logger.log(`[DEBUG - Webhook Verify] Timestamp Header: "${timestamp}"`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body exists: ${!!payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body type: ${typeof payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body length: ${payload?.length || 0}`);
-    logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_SECRET set: ${!!SENDGRID_WEBHOOK_SECRET}`);
+    logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_PUBLIC_KEY set: ${!!SENDGRID_WEBHOOK_PUBLIC_KEY}`);
 
-    // Skip verification if no webhook secret is configured
-    if (!SENDGRID_WEBHOOK_SECRET) {
-        logger.warn('[Webhook] No webhook secret configured — skipping verification');
+    // Skip verification if no public key is configured
+    if (!SENDGRID_WEBHOOK_PUBLIC_KEY) {
+        logger.warn('[Webhook] No webhook public key configured — skipping verification');
         // Parse the JSON body for the next middleware
         try {
             req.body = JSON.parse(payload.toString());
@@ -40,9 +42,9 @@ exports.verifyWebhookSignature = (req, res, next) => {
     }
 
     // Check for required headers and payload
-    if (!signature || !timestamp || !payload) {
+    if (!signatureHeader || !timestamp || !payload) {
         logger.error('[Webhook Verification] Missing required data for verification');
-        logger.error(`[Webhook Verification] signature: ${!!signature}, timestamp: ${!!timestamp}, payload: ${!!payload}`);
+        logger.error(`[Webhook Verification] signature: ${!!signatureHeader}, timestamp: ${!!timestamp}, payload: ${!!payload}`);
         
         // In development, allow unsigned webhooks for testing
         if (process.env.NODE_ENV === 'development') {
@@ -61,76 +63,72 @@ exports.verifyWebhookSignature = (req, res, next) => {
     try {
         logger.log('[Webhook Verification] Attempting to verify signature...');
         
-        // SendGrid signature verification
-        const payloadString = payload.toString();
-        const signedPayload = timestamp + payloadString;
-        
-        // Create HMAC hash - SendGrid produces a HEX digest
-        let expectedSignature = crypto
-            .createHmac('sha256', SENDGRID_WEBHOOK_SECRET)
-            .update(signedPayload)
-            .digest('hex');
-        
-        // SendGrid sends signature in format "v1,signature1,signature2"
-        // We need to check if our expected signature matches any of the provided signatures
-        const signatures = signature.split(',');
-        const isVerified = signatures.some(sig => {
-            const cleanSig = sig.trim();
-            // Remove "v1=" prefix if present
-            let sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
-            
-            logger.log(`[DEBUG - Webhook Verify] --- Inside some() loop ---`);
-            logger.log(`[DEBUG - Webhook Verify] Raw 'sig' part: "${sig}"`);
+        // The data that was signed by SendGrid: timestamp + raw_body
+        const signedPayloadBuffer = Buffer.from(timestamp + payload.toString('utf8'), 'utf8');
 
-            // CRITICAL ADDITION: Sanitize sigValue to ensure only hex characters
-            const originalSigValue = sigValue;
-            sigValue = sigValue.replace(/[^0-9a-fA-F]/g, '');
-            if (originalSigValue !== sigValue) {
-                logger.warn(`[DEBUG - Webhook Verify] sigValue was sanitized. Original (length ${originalSigValue.length}): "${originalSigValue}", Cleaned (length ${sigValue.length}): "${sigValue}"`);
+        // SendGrid sends signature in format "v1=signature1,v1=signature2"
+        const signatures = signatureHeader.split(',').map(s => s.trim());
+        
+        let isVerified = false;
+        for (const sigPart of signatures) {
+            if (!sigPart.startsWith('v1=')) {
+                logger.warn(`[DEBUG - Webhook Verify] Skipping non-v1 signature part: "${sigPart}"`);
+                continue;
+            }
+            
+            const sigValueBase64 = sigPart.substring(3); // Extract Base64 part after "v1="
+
+            logger.log(`[DEBUG - Webhook Verify] Processing signature part: "${sigPart}"`);
+            logger.log(`[DEBUG - Webhook Verify] Extracted Base64 signature value: "${sigValueBase64}"`);
+
+            // Convert Base64 signature to a Buffer
+            let signatureBuffer;
+            try {
+                signatureBuffer = Buffer.from(sigValueBase64, 'base64');
+                logger.log(`[DEBUG - Webhook Verify] Base64 signature converted to buffer. Length: ${signatureBuffer.length}`);
+            } catch (bufferError) {
+                logger.error(`[DEBUG - Webhook Verify] Failed to convert Base64 signature to buffer: ${bufferError.message}`);
+                continue; // Try next signature if conversion fails
             }
 
-            logger.log(`[DEBUG - Webhook Verify] Cleaned 'sigValue' (after sanitize): "${sigValue}" (length: ${sigValue.length})`);
-            
-            // CRITICAL ADDITION: Sanitize expectedSignature as well, just in case
-            const originalExpectedSignature = expectedSignature;
-            expectedSignature = expectedSignature.replace(/[^0-9a-fA-F]/g, '');
-            if (originalExpectedSignature !== expectedSignature) {
-                logger.warn(`[DEBUG - Webhook Verify] expectedSignature was sanitized. Original (length ${originalExpectedSignature.length}): "${originalExpectedSignature}", Cleaned (length ${expectedSignature.length}): "${expectedSignature}"`);
+            // Perform ECDSA P-256 SHA-256 verification
+            // The public key must be in a format Node.js crypto understands (e.g., PEM).
+            try {
+                const verified = crypto.verify(
+                    'sha256', // The hash algorithm used by SendGrid
+                    signedPayloadBuffer, // The data that was signed (timestamp + raw body)
+                    SENDGRID_WEBHOOK_PUBLIC_KEY, // The public key from SendGrid (from env var)
+                    signatureBuffer // The actual signature bytes from the header (Base64 decoded)
+                );
+    
+                if (verified) {
+                    isVerified = true;
+                    break; // Found a valid signature
+                } else {
+                    logger.warn(`[DEBUG - Webhook Verify] Signature part "${sigPart}" failed verification.`);
+                }
+            } catch (verifyError) {
+                logger.error(`[DEBUG - Webhook Verify] Error during crypto.verify: ${verifyError.message}`);
+                // This might happen if the public key format is incorrect or signature is malformed.
+                // Continue to next signature part if available.
+                continue; 
             }
-
-            logger.log(`[DEBUG - Webhook Verify] Expected Signature (after sanitize): "${expectedSignature}" (length: ${expectedSignature.length})`);
-            
-            // Check expected byte lengths BEFORE conversion
-            logger.log(`[DEBUG - Webhook Verify] Expected byte length for sigValue: ${Buffer.byteLength(sigValue, 'hex')}`);
-            logger.log(`[DEBUG - Webhook Verify] Expected byte length for expectedSignature: ${Buffer.byteLength(expectedSignature, 'hex')}`);
-
-            // Convert both to buffers using 'hex' encoding for a byte-by-byte comparison
-            const bufferExpected = Buffer.from(expectedSignature, 'hex');
-            const bufferReceived = Buffer.from(sigValue, 'hex');
-            
-            logger.log(`[DEBUG - Webhook Verify] Buffer.from(expectedSignature, 'hex') length: ${bufferExpected.length}`);
-            logger.log(`[DEBUG - Webhook Verify] Buffer.from(sigValue, 'hex') length: ${bufferReceived.length}`);
-
-            return crypto.timingSafeEqual(
-                bufferExpected,
-                bufferReceived
-            );
-        });
-
+        }
+        
         if (isVerified) {
             logger.log('[Webhook Verification] Signature verified successfully');
             // Parse JSON body for next middleware
-            req.body = JSON.parse(payloadString);
+            req.body = JSON.parse(payload.toString());
             next();
         } else {
             logger.error('[Webhook Verification] Signature verification failed');
-            logger.error(`[Webhook Verification] Expected: ${expectedSignature}`);
-            logger.error(`[Webhook Verification] Received: ${signature}`);
+            logger.error(`[Webhook Verification] Public key used: ${SENDGRID_WEBHOOK_PUBLIC_KEY ? SENDGRID_WEBHOOK_PUBLIC_KEY.substring(0, 50) + '...' : 'Not set'}`); // Log part of key for debug
+            logger.error(`[Webhook Verification] Received signature header: ${signatureHeader}`);
             
             // In development, allow failed verification for testing
             if (process.env.NODE_ENV === 'development') {
                 logger.warn('[Webhook] Allowing failed verification in development mode');
-                req.body = JSON.parse(payloadString);
+                req.body = JSON.parse(payload.toString());
                 return next();
             }
             
