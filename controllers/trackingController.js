@@ -3,8 +3,7 @@
 const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
 const logger = require('../utils/logger');
-
-const { EventWebhook } = require('@sendgrid/eventwebhook');
+const crypto = require('crypto');
 
 const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
 
@@ -14,7 +13,7 @@ const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
 exports.verifyWebhookSignature = (req, res, next) => {
     const signature = req.headers['x-twilio-email-event-webhook-signature'];
     const timestamp = req.headers['x-twilio-email-event-webhook-timestamp'];
-    const payload = req.rawBody;
+    const payload = req.body; // This will be a Buffer from express.raw()
 
     logger.log(`[DEBUG - Webhook Verify] === Entering verification middleware ===`);
     logger.log(`[DEBUG - Webhook Verify] Request URL: ${req.originalUrl}`);
@@ -26,76 +25,79 @@ exports.verifyWebhookSignature = (req, res, next) => {
     logger.log(`[DEBUG - Webhook Verify] Raw Body exists: ${!!payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body type: ${typeof payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body length: ${payload?.length || 0}`);
-    logger.log(`[DEBUG - Webhook Verify] Raw Body Preview: "${payload?.toString().substring(0, 100)}"`);
-    logger.log(`[DEBUG - Webhook Verify] Request Body exists: ${!!req.body}`);
-    logger.log(`[DEBUG - Webhook Verify] Request Body type: ${typeof req.body}`);
-    logger.log(`[DEBUG - Webhook Verify] Request Body: ${JSON.stringify(req.body)}`);
     logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_SECRET set: ${!!SENDGRID_WEBHOOK_SECRET}`);
-
-    // If no raw body, try to create it from req.body
-    if (!payload && req.body) {
-        logger.log('[DEBUG - Webhook Verify] No raw body found, creating from req.body');
-        req.rawBody = Buffer.from(JSON.stringify(req.body), 'utf8');
-    }
 
     // Skip verification if no webhook secret is configured
     if (!SENDGRID_WEBHOOK_SECRET) {
         logger.warn('[Webhook] No webhook secret configured — skipping verification');
+        // Parse the JSON body for the next middleware
+        try {
+            req.body = JSON.parse(payload.toString());
+        } catch (e) {
+            req.body = [];
+        }
         return next();
     }
 
     // Check for required headers and payload
-    if (!signature || !timestamp) {
-        logger.error('[Webhook Verification] Missing required signature headers');
-        logger.error(`[Webhook Verification] signature: ${!!signature}, timestamp: ${!!timestamp}`);
+    if (!signature || !timestamp || !payload) {
+        logger.error('[Webhook Verification] Missing required data for verification');
+        logger.error(`[Webhook Verification] signature: ${!!signature}, timestamp: ${!!timestamp}, payload: ${!!payload}`);
         
         // In development, allow unsigned webhooks for testing
         if (process.env.NODE_ENV === 'development') {
             logger.warn('[Webhook] Allowing unsigned webhook in development mode');
+            try {
+                req.body = payload ? JSON.parse(payload.toString()) : [];
+            } catch (e) {
+                req.body = [];
+            }
             return next();
         }
         
-        return res.status(401).json({ error: 'Unauthorized: Missing signature headers' });
-    }
-
-    if (!req.rawBody) {
-        logger.error('[Webhook Verification] No payload found for verification');
-        
-        // In development, allow webhooks without payload for testing
-        if (process.env.NODE_ENV === 'development') {
-            logger.warn('[Webhook] Allowing webhook without payload in development mode');
-            return next();
-        }
-        
-        return res.status(401).json({ error: 'Unauthorized: Missing payload' });
+        return res.status(401).json({ error: 'Unauthorized: Missing signature data' });
     }
 
     try {
         logger.log('[Webhook Verification] Attempting to verify signature...');
         
-        // Create EventWebhook instance
-        const eventWebhook = new EventWebhook();
+        // SendGrid signature verification
+        const payloadString = payload.toString();
+        const signedPayload = timestamp + payloadString;
         
-        // Convert the public key to ECDSA format
-        const ecPublicKey = eventWebhook.convertPublicKeyToECDSA(SENDGRID_WEBHOOK_SECRET);
+        // Create HMAC hash
+        const expectedSignature = crypto
+            .createHmac('sha256', SENDGRID_WEBHOOK_SECRET)
+            .update(signedPayload)
+            .digest('base64');
         
-        // Verify the signature using the correct method signature
-        const isVerified = eventWebhook.verifySignature(
-            ecPublicKey,
-            req.rawBody.toString(),
-            signature,
-            timestamp
-        );
+        // SendGrid sends signature in format "v1,signature1,signature2"
+        // We need to check if our expected signature matches any of the provided signatures
+        const signatures = signature.split(',');
+        const isVerified = signatures.some(sig => {
+            const cleanSig = sig.trim();
+            // Remove "v1=" prefix if present
+            const sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
+            return crypto.timingSafeEqual(
+                Buffer.from(expectedSignature),
+                Buffer.from(sigValue)
+            );
+        });
 
         if (isVerified) {
             logger.log('[Webhook Verification] Signature verified successfully');
+            // Parse JSON body for next middleware
+            req.body = JSON.parse(payloadString);
             next();
         } else {
             logger.error('[Webhook Verification] Signature verification failed');
+            logger.error(`[Webhook Verification] Expected: ${expectedSignature}`);
+            logger.error(`[Webhook Verification] Received: ${signature}`);
             
             // In development, allow failed verification for testing
             if (process.env.NODE_ENV === 'development') {
                 logger.warn('[Webhook] Allowing failed verification in development mode');
+                req.body = JSON.parse(payloadString);
                 return next();
             }
             
@@ -108,6 +110,11 @@ exports.verifyWebhookSignature = (req, res, next) => {
         // In development, continue despite verification errors
         if (process.env.NODE_ENV === 'development') {
             logger.warn('[Webhook] Continuing despite verification error in development mode');
+            try {
+                req.body = JSON.parse(payload.toString());
+            } catch (parseErr) {
+                req.body = [];
+            }
             return next();
         }
         
@@ -126,8 +133,6 @@ exports.handleWebhook = async (req, res) => {
         logger.log('[Webhook] Request headers:', JSON.stringify(req.headers, null, 2));
         logger.log('[Webhook] Request body type:', typeof req.body);
         logger.log('[Webhook] Request body:', JSON.stringify(req.body, null, 2));
-        logger.log('[Webhook] Raw body type:', typeof req.rawBody);
-        logger.log('[Webhook] Raw body preview:', req.rawBody?.toString().substring(0, 200));
 
         // Handle empty or invalid request body
         if (!req.body) {
@@ -244,65 +249,128 @@ async function processWebhookEvent(event, campaign, subscriber, campaignId, subs
 
     const eventType = event.event;
     const email = event.email || 'unknown@email.com';
+    const timestamp = event.timestamp || Date.now();
 
-    logger.log(`[Webhook] Processing ${eventType} event for ${email}`);
+    logger.log(`[Webhook] Processing ${eventType} event for ${email} at ${new Date(timestamp * 1000).toISOString()}`);
 
     try {
         switch (eventType) {
             case 'open':
                 logger.log(`[Webhook] Email opened by ${email}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { opens: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { opens: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             case 'click':
                 logger.log(`[Webhook] Link clicked by ${email}, URL: ${event.url || 'N/A'}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { clicks: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { clicks: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             case 'bounce':
                 logger.log(`[Webhook] Email bounced for ${email}, Type: ${event.type || 'N/A'}, Reason: ${event.reason || 'N/A'}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { bouncedCount: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { bouncedCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 
                 // For hard bounces, mark subscriber as bounced
                 if (event.type === 'hard') {
-                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'bounced' });
+                    await Subscriber.findByIdAndUpdate(subscriberId, { 
+                        status: 'bounced',
+                        bouncedAt: new Date()
+                    });
                     logger.log(`[Webhook] Subscriber ${subscriberId} marked as bounced due to hard bounce`);
                 }
                 break;
 
             case 'dropped':
                 logger.log(`[Webhook] Email dropped for ${email}, Reason: ${event.reason || 'N/A'}`);
-                // Optionally increment a dropped count if you have this field
-                // await Campaign.findByIdAndUpdate(campaignId, { $inc: { droppedCount: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { droppedCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             case 'spamreport':
                 logger.log(`[Webhook] Spam report from ${email}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { complaintCount: 1 } });
-                await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
-                logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed due to spam report`);
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { complaintCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
+                await Subscriber.findByIdAndUpdate(subscriberId, { 
+                    status: 'complained',
+                    complainedAt: new Date()
+                });
+                logger.log(`[Webhook] Subscriber ${subscriberId} marked as complained due to spam report`);
                 break;
 
             case 'unsubscribe':
                 logger.log(`[Webhook] Email unsubscribed by ${email}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
-                await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { unsubscribedCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
+                await Subscriber.findByIdAndUpdate(subscriberId, { 
+                    status: 'unsubscribed',
+                    unsubscribedAt: new Date()
+                });
                 logger.log(`[Webhook] Subscriber ${subscriberId} unsubscribed`);
                 break;
 
             case 'delivered':
                 logger.log(`[Webhook] Email delivered to ${email}`);
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { deliveredCount: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { deliveredCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             case 'processed':
                 logger.log(`[Webhook] Email processed by SendGrid for ${email}`);
-                // Optionally track processed emails
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { processedCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             case 'deferred':
                 logger.log(`[Webhook] Email deferred for ${email}, Reason: ${event.response || 'N/A'}`);
-                // Optionally track deferred emails
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { deferredCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 break;
 
             default:
@@ -366,7 +434,13 @@ exports.unsubscribe = async (req, res) => {
         if (campaignId && isValidObjectId(campaignId)) {
             const campaign = await Campaign.findById(campaignId);
             if (campaign) {
-                await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
+                await Campaign.findByIdAndUpdate(
+                    campaignId, 
+                    { 
+                        $inc: { unsubscribedCount: 1 },
+                        $set: { lastActivity: new Date() }
+                    }
+                );
                 logger.log(`[Unsubscribe] Campaign ${campaignId} unsubscribed count incremented`);
             } else {
                 logger.warn(`[Unsubscribe] Campaign ${campaignId} not found for unsubscribe tracking`);
