@@ -5,6 +5,8 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const Template = require('../models/Template');
+const OpenEvent = require('../models/OpenEvent'); // <-- ADD THIS LINE
+const ClickEvent = require('../models/ClickEvent'); // <-- ADD THIS LINE
 const mongoose = require('mongoose'); // Make sure mongoose is imported for ObjectId
 
 const { sendEmail } = require('../services/emailService');
@@ -332,15 +334,17 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         lastSentAt: { $gte: sevenDaysAgo }
     }).sort({ lastSentAt: -1 }).limit(5);
 
-    // Aggregate email performance
+    // NOTE: The performanceStats aggregation below still uses 'campaign.opens' and 'campaign.clicks'
+    // It should be updated similarly to getCampaignAnalytics to query OpenEvent/ClickEvent collections
+    // for accurate data. This is a separate task. For now, it will show 0 for opens/clicks.
     const performanceStats = await Campaign.aggregate([
         { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
         {
             $group: {
                 _id: null,
                 totalEmailsSent: { $sum: '$emailsSent' },
-                totalOpens: { $sum: '$opens' },
-                totalClicks: { $sum: '$clicks' },
+                totalOpens: { $sum: '$opens' }, // This will be 0 if 'opens' is not updated on Campaign
+                totalClicks: { $sum: '$clicks' }, // This will be 0 if 'clicks' is not updated on Campaign
                 totalBounced: { $sum: '$bouncedCount' },
                 totalUnsubscribed: { $sum: '$unsubscribedCount' },
                 totalComplaints: { $sum: '$complaintCount' }
@@ -396,7 +400,14 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/analytics
 // @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
-    const campaign = await Campaign.findById(req.params.id);
+    const { id: campaignId } = req.params; // Destructure and rename id to campaignId for clarity
+
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+        res.status(400);
+        throw new Error('Invalid campaign ID');
+    }
+
+    const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
         res.status(404);
@@ -408,22 +419,59 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to view analytics for this campaign');
     }
 
-    // For now, return basic stats from the campaign document itself
-    // In a real-world scenario, you might parse webhook logs for time-series data
-    res.status(200).json({
-        campaignId: campaign._id,
-        name: campaign.name,
-        emailsSent: campaign.emailsSent,
-        opens: campaign.opens,
-        clicks: campaign.clicks,
-        bounced: campaign.bouncedCount,
-        unsubscribed: campaign.unsubscribedCount,
-        complaints: campaign.complaintCount,
-        status: campaign.status,
-        lastSentAt: campaign.lastSentAt,
-        openRate: campaign.emailsSent > 0 ? (campaign.opens / campaign.emailsSent * 100) : 0,
-        clickRate: campaign.emailsSent > 0 ? (campaign.clicks / campaign.emailsSent * 100) : 0,
-    });
+    try {
+        // Calculate Total Opens
+        const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
+
+        // Calculate Unique Opens
+        const uniqueOpens = await OpenEvent.aggregate([
+            { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
+            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
+            { $count: 'uniqueCount' }
+        ]);
+        const uniqueOpensCount = uniqueOpens.length > 0 ? uniqueOpens[0].uniqueCount : 0;
+
+        // Calculate Total Clicks
+        const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
+
+        // Calculate Unique Clicks
+        const uniqueClicks = await ClickEvent.aggregate([
+            { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
+            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
+            { $count: 'uniqueCount' }
+        ]);
+        const uniqueClicksCount = uniqueClicks.length > 0 ? uniqueClicks[0].uniqueCount : 0;
+
+        // Optionally, you might still want to include some campaign details
+        // that are not part of the analytics counts from events, e.g., emailsSent
+        // However, for opens/clicks, rely on the event collections.
+        const emailsSent = campaign.emailsSent || 0;
+        const openRate = emailsSent > 0 ? (uniqueOpensCount / emailsSent * 100) : 0;
+        const clickRate = emailsSent > 0 ? (uniqueClicksCount / emailsSent * 100) : 0;
+
+
+        res.status(200).json({
+            campaignId: campaignId,
+            name: campaign.name, // Include campaign name for context
+            emailsSent: emailsSent, // Number of emails attempted to send
+            totalOpens: totalOpens,
+            uniqueOpens: uniqueOpensCount,
+            totalClicks: totalClicks,
+            uniqueClicks: uniqueClicksCount,
+            // You can add other stats from campaign model if relevant and updated
+            bounced: campaign.bouncedCount || 0,
+            unsubscribed: campaign.unsubscribedCount || 0,
+            complaints: campaign.complaintCount || 0,
+            status: campaign.status,
+            lastSentAt: campaign.lastSentAt,
+            openRate: openRate, // Calculated from unique opens
+            clickRate: clickRate // Calculated from unique clicks
+        });
+
+    } catch (error) {
+        console.error(`Error fetching analytics for campaign ${campaignId}:`, error);
+        res.status(500).json({ message: 'Error fetching campaign analytics', error: error.message });
+    }
 });
 
 
