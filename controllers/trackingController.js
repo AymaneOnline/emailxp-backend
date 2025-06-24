@@ -2,17 +2,19 @@
 
 const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
+const OpenEvent = require('../models/OpenEvent'); // Import new OpenEvent model
+const ClickEvent = require('../models/ClickEvent'); // Import new ClickEvent model
 const logger = require('../utils/logger');
 // const crypto = require('crypto'); // No longer needed for manual tracking
 
-// Removed SENDGRID_WEBHOOK_PUBLIC_KEY_DER_BASE64 and sendGridPublicKeyObject
-
 /**
  * @desc Handles email open tracking.
- * Called by a 1x1 tracking pixel embedded in the email.
+ * Creates an OpenEvent document.
  */
 exports.trackOpen = async (req, res) => {
     const { campaignId, subscriberId } = req.query; // IDs are now directly in query params
+    const ipAddress = req.ip; // Capture IP address
+    const userAgent = req.headers['user-agent']; // Capture user agent
 
     logger.log(`[Tracking] Open event received - Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}`);
 
@@ -28,22 +30,27 @@ exports.trackOpen = async (req, res) => {
         const subscriber = await Subscriber.findById(subscriberId);
 
         if (!campaign) {
-            logger.warn(`[Tracking] Campaign ${campaignId} not found for open tracking.`);
+            logger.warn(`[Tracking] Campaign ${campaignId} not found for open tracking. Event will still be logged.`);
         }
         if (!subscriber) {
-            logger.warn(`[Tracking] Subscriber ${subscriberId} not found for open tracking.`);
+            logger.warn(`[Tracking] Subscriber ${subscriberId} not found for open tracking. Event will still be logged.`);
         }
 
+        // Create a new OpenEvent document
+        await OpenEvent.create({
+            campaign: campaignId,
+            subscriber: subscriberId,
+            email: subscriber ? subscriber.email : 'unknown@example.com', // Get email from subscriber if found
+            ipAddress: ipAddress,
+            userAgent: userAgent
+        });
+        logger.log(`[Tracking] OpenEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
+
+        // You might still want to update the lastActivity on the campaign for overall recency
         if (campaign) {
-            await Campaign.findByIdAndUpdate(
-                campaignId, 
-                { 
-                    $inc: { opens: 1 },
-                    $set: { lastActivity: new Date() }
-                }
-            );
-            logger.log(`[Tracking] Campaign ${campaignId} open count incremented.`);
+             await Campaign.findByIdAndUpdate(campaignId, { $set: { lastActivity: new Date() } });
         }
+
 
         // Send back a 1x1 transparent GIF
         res.setHeader('Content-Type', 'image/gif');
@@ -63,20 +70,23 @@ exports.trackOpen = async (req, res) => {
 
 /**
  * @desc Handles email click tracking and redirects to the original URL.
- * Called by modified links in the email.
+ * Creates a ClickEvent document.
  */
 exports.trackClick = async (req, res) => {
     const { campaignId, subscriberId, redirect } = req.query;
+    const ipAddress = req.ip; // Capture IP address
+    const userAgent = req.headers['user-agent']; // Capture user agent
+    const redirectUrl = decodeURIComponent(redirect || '');
 
-    logger.log(`[Tracking] Click event received - Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, Redirect URL: ${decodeURIComponent(redirect || 'N/A')}`);
+    logger.log(`[Tracking] Click event received - Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, Redirect URL: ${redirectUrl || 'N/A'}`);
 
     try {
         // Validate IDs
         if (!campaignId || !subscriberId || !isValidObjectId(campaignId) || !isValidObjectId(subscriberId)) {
             logger.warn(`[Tracking] Invalid or missing IDs for click tracking. Campaign: ${campaignId}, Subscriber: ${subscriberId}`);
             // Attempt to redirect anyway if a redirect URL is provided, but don't track.
-            if (redirect) {
-                return res.redirect(decodeURIComponent(redirect));
+            if (redirectUrl) {
+                return res.redirect(redirectUrl);
             }
             return res.status(400).json({ error: 'Invalid or missing tracking IDs' });
         }
@@ -85,27 +95,32 @@ exports.trackClick = async (req, res) => {
         const subscriber = await Subscriber.findById(subscriberId);
 
         if (!campaign) {
-            logger.warn(`[Tracking] Campaign ${campaignId} not found for click tracking.`);
+            logger.warn(`[Tracking] Campaign ${campaignId} not found for click tracking. Event will still be logged.`);
         }
         if (!subscriber) {
-            logger.warn(`[Tracking] Subscriber ${subscriberId} not found for click tracking.`);
+            logger.warn(`[Tracking] Subscriber ${subscriberId} not found for click tracking. Event will still be logged.`);
         }
 
+        // Create a new ClickEvent document
+        await ClickEvent.create({
+            campaign: campaignId,
+            subscriber: subscriberId,
+            email: subscriber ? subscriber.email : 'unknown@example.com', // Get email from subscriber if found
+            url: redirectUrl, // Store the URL that was clicked
+            ipAddress: ipAddress,
+            userAgent: userAgent
+        });
+        logger.log(`[Tracking] ClickEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
+
+        // You might still want to update the lastActivity on the campaign for overall recency
         if (campaign) {
-            await Campaign.findByIdAndUpdate(
-                campaignId, 
-                { 
-                    $inc: { clicks: 1 },
-                    $set: { lastActivity: new Date() }
-                }
-            );
-            logger.log(`[Tracking] Campaign ${campaignId} click count incremented.`);
+            await Campaign.findByIdAndUpdate(campaignId, { $set: { lastActivity: new Date() } });
         }
 
         // Redirect to the original URL
-        if (redirect) {
-            logger.log(`[Tracking] Redirecting to: ${decodeURIComponent(redirect)}`);
-            return res.redirect(decodeURIComponent(redirect));
+        if (redirectUrl) {
+            logger.log(`[Tracking] Redirecting to: ${redirectUrl}`);
+            return res.redirect(redirectUrl);
         } else {
             logger.warn('[Tracking] No redirect URL provided for click tracking.');
             return res.status(200).json({ message: 'Click tracked, but no redirect URL provided.' });
@@ -113,8 +128,8 @@ exports.trackClick = async (req, res) => {
 
     } catch (error) {
         logger.error(`[Tracking Error] Failed to track click for Campaign ${campaignId}, Subscriber ${subscriberId}:`, error);
-        if (redirect) {
-            return res.redirect(decodeURIComponent(redirect)); // Still attempt to redirect on error
+        if (redirectUrl) {
+            return res.redirect(redirectUrl); // Still attempt to redirect on error
         }
         res.status(500).json({ error: 'An error occurred during click tracking' });
     }
