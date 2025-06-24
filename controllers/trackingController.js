@@ -66,7 +66,7 @@ exports.verifyWebhookSignature = (req, res, next) => {
         const signedPayload = timestamp + payloadString;
         
         // Create HMAC hash - SendGrid produces a HEX digest
-        const expectedSignature = crypto
+        let expectedSignature = crypto
             .createHmac('sha256', SENDGRID_WEBHOOK_SECRET)
             .update(signedPayload)
             .digest('hex');
@@ -77,12 +77,28 @@ exports.verifyWebhookSignature = (req, res, next) => {
         const isVerified = signatures.some(sig => {
             const cleanSig = sig.trim();
             // Remove "v1=" prefix if present
-            const sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
+            let sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
             
             logger.log(`[DEBUG - Webhook Verify] --- Inside some() loop ---`);
             logger.log(`[DEBUG - Webhook Verify] Raw 'sig' part: "${sig}"`);
-            logger.log(`[DEBUG - Webhook Verify] Cleaned 'sigValue': "${sigValue}" (length: ${sigValue.length})`);
-            logger.log(`[DEBUG - Webhook Verify] Expected Signature: "${expectedSignature}" (length: ${expectedSignature.length})`);
+
+            // CRITICAL ADDITION: Sanitize sigValue to ensure only hex characters
+            const originalSigValue = sigValue;
+            sigValue = sigValue.replace(/[^0-9a-fA-F]/g, '');
+            if (originalSigValue !== sigValue) {
+                logger.warn(`[DEBUG - Webhook Verify] sigValue was sanitized. Original (length ${originalSigValue.length}): "${originalSigValue}", Cleaned (length ${sigValue.length}): "${sigValue}"`);
+            }
+
+            logger.log(`[DEBUG - Webhook Verify] Cleaned 'sigValue' (after sanitize): "${sigValue}" (length: ${sigValue.length})`);
+            
+            // CRITICAL ADDITION: Sanitize expectedSignature as well, just in case
+            const originalExpectedSignature = expectedSignature;
+            expectedSignature = expectedSignature.replace(/[^0-9a-fA-F]/g, '');
+            if (originalExpectedSignature !== expectedSignature) {
+                logger.warn(`[DEBUG - Webhook Verify] expectedSignature was sanitized. Original (length ${originalExpectedSignature.length}): "${originalExpectedSignature}", Cleaned (length ${expectedSignature.length}): "${expectedSignature}"`);
+            }
+
+            logger.log(`[DEBUG - Webhook Verify] Expected Signature (after sanitize): "${expectedSignature}" (length: ${expectedSignature.length})`);
             
             // Check expected byte lengths BEFORE conversion
             logger.log(`[DEBUG - Webhook Verify] Expected byte length for sigValue: ${Buffer.byteLength(sigValue, 'hex')}`);
@@ -91,7 +107,7 @@ exports.verifyWebhookSignature = (req, res, next) => {
             // Convert both to buffers using 'hex' encoding for a byte-by-byte comparison
             const bufferExpected = Buffer.from(expectedSignature, 'hex');
             const bufferReceived = Buffer.from(sigValue, 'hex');
-
+            
             logger.log(`[DEBUG - Webhook Verify] Buffer.from(expectedSignature, 'hex') length: ${bufferExpected.length}`);
             logger.log(`[DEBUG - Webhook Verify] Buffer.from(sigValue, 'hex') length: ${bufferReceived.length}`);
 
