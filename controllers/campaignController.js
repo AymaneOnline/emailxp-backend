@@ -5,9 +5,9 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const Template = require('../models/Template');
-const OpenEvent = require('../models/OpenEvent'); // Added import
-const ClickEvent = require('../models/ClickEvent'); // Added import
-const mongoose = require('mongoose'); // Make sure mongoose is imported for ObjectId
+const OpenEvent = require('../models/OpenEvent');
+const ClickEvent = require('../models/ClickEvent');
+const mongoose = require('mongoose');
 
 const { sendEmail } = require('../services/emailService');
 
@@ -263,6 +263,12 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                 campaign.list._id
             );
 
+            // Log send status for debugging
+            if (result.success) {
+                console.log(`[SendCampaign] Email to ${subscriber.email} SUCCESS.`);
+            } else {
+                console.error(`[SendCampaign] Email to ${subscriber.email} FAILED: ${result.message}`, result.error);
+            }
             return result;
         });
 
@@ -285,7 +291,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
 
         campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        campaign.emailsSent = successfulSends;
+        campaign.emailsSent = successfulSends; // This is crucial for dashboard counts
         await campaign.save();
 
         res.status(200).json({
@@ -321,12 +327,26 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const totalLists = await List.countDocuments({ user: userId });
 
     // Total Subscribers for lists owned by the user
-    // This requires aggregation across lists
-    const userLists = await List.find({ user: userId }).select('_id');
-    const userListIds = userLists.map(list => list._id);
-    const totalSubscribers = await Subscriber.countDocuments({ list: { $in: userListIds } });
+    // Aggregates total unique subscribed emails across all user's lists
+    const totalSubscribersAggregate = await List.aggregate([
+        { $match: { user: new mongoose.Types.ObjectId(userId) } },
+        {
+            $lookup: {
+                from: 'subscribers', // The name of the subscribers collection
+                localField: '_id',
+                foreignField: 'list',
+                as: 'subscribersInList'
+            }
+        },
+        { $unwind: { path: '$subscribersInList', preserveNullAndEmptyArrays: true } },
+        { $match: { 'subscribersInList.status': 'subscribed' } },
+        { $group: { _id: '$subscribersInList.email' } }, // Group by email to count unique subscribers across lists
+        { $count: 'total' }
+    ]);
+    const totalSubscribers = totalSubscribersAggregate.length > 0 ? totalSubscribersAggregate[0].total : 0;
 
-    // Campaigns Sent
+
+    // Campaigns Sent count for the user
     const campaignsSent = await Campaign.countDocuments({ user: userId, status: 'sent' });
 
     // Recent Campaigns (last 7 days)
@@ -337,80 +357,87 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         lastSentAt: { $gte: sevenDaysAgo }
     }).sort({ lastSentAt: -1 }).limit(5);
 
-
-    // --- NEW AGGREGATION FOR PERFORMANCE STATS FROM EVENT COLLECTIONS ---
-    // Get all campaigns sent by the user to use as a filter for events
-    const sentCampaignsByUser = await Campaign.find({ user: userId, status: 'sent' }).select('_id');
-    const sentCampaignIds = sentCampaignsByUser.map(campaign => campaign._id);
+    // --- AGGREGATION FOR ALL PERFORMANCE STATS FROM EVENT COLLECTIONS AND CAMPAIGN MODEL ---
+    const sentCampaignIdsByUser = await Campaign.find({ user: userId, status: 'sent' }).select('_id');
+    const sentCampaignObjectIds = sentCampaignIdsByUser.map(campaign => new mongoose.Types.ObjectId(campaign._id));
 
     let totalEmailsSent = 0;
-    // Sum emailsSent from Campaign documents for sent campaigns
-    if (sentCampaignIds.length > 0) {
-        const sentEmailsResult = await Campaign.aggregate([
-            { $match: { _id: { $in: sentCampaignIds } } },
-            { $group: { _id: null, total: { $sum: '$emailsSent' } } }
+    let totalBounced = 0;
+    let totalUnsubscribed = 0;
+    let totalComplaints = 0; // Placeholder for now
+
+    if (sentCampaignObjectIds.length > 0) {
+        const overallCampaignPerformance = await Campaign.aggregate([
+            { $match: { _id: { $in: sentCampaignObjectIds } } },
+            {
+                $group: {
+                    _id: null,
+                    sumEmailsSent: { $sum: '$emailsSent' },
+                    sumBounced: { $sum: '$bouncedCount' },
+                    sumUnsubscribed: { $sum: '$unsubscribedCount' },
+                    sumComplaints: { $sum: '$complaintCount' }
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    totalEmailsSent: '$sumEmailsSent',
+                    totalBounced: '$sumBounced',
+                    totalUnsubscribed: '$sumUnsubscribed',
+                    totalComplaints: '$sumComplaints'
+                }
+            }
         ]);
-        totalEmailsSent = sentEmailsResult.length > 0 ? sentEmailsResult[0].total : 0;
+
+        if (overallCampaignPerformance.length > 0) {
+            totalEmailsSent = overallCampaignPerformance[0].totalEmailsSent || 0;
+            totalBounced = overallCampaignPerformance[0].totalBounced || 0;
+            totalUnsubscribed = overallCampaignPerformance[0].totalUnsubscribed || 0;
+            totalComplaints = overallCampaignPerformance[0].totalComplaints || 0;
+        }
     }
 
-    // Aggregate total opens from OpenEvent collection for user's sent campaigns
-    const totalOpensAggregate = await OpenEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignIds } } },
-        { $count: 'total' }
-    ]);
-    const totalOpens = totalOpensAggregate.length > 0 ? totalOpensAggregate[0].total : 0;
-
-    // Aggregate unique opens from OpenEvent collection for user's sent campaigns
-    const uniqueOpensAggregate = await OpenEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignIds } } },
-        { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones across all sent campaigns
-        { $count: 'uniqueCount' }
-    ]);
-    const uniqueOpens = uniqueOpensAggregate.length > 0 ? uniqueOpensAggregate[0].uniqueCount : 0;
-
-    // Aggregate total clicks from ClickEvent collection for user's sent campaigns
-    const totalClicksAggregate = await ClickEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignIds } } },
-        { $count: 'total' }
-    ]);
-    const totalClicks = totalClicksAggregate.length > 0 ? totalClicksAggregate[0].total : 0;
-
-    // Aggregate unique clicks from ClickEvent collection for user's sent campaigns
-    const uniqueClicksAggregate = await ClickEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignIds } } },
-        { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones across all sent campaigns
-        { $count: 'uniqueCount' }
-    ]);
-    const uniqueClicks = uniqueClicksAggregate.length > 0 ? uniqueClicksAggregate[0].uniqueCount : 0;
-
-    // For bounced, unsubscribed, and complaints, we can still use the Campaign model's aggregated counts
-    // as these are updated via direct interactions or the old webhook logic.
-    // However, if you plan to introduce specific BounceEvent/ComplaintEvent models later, these will need updating too.
-    const overallCampaignStats = await Campaign.aggregate([
-        { $match: { user: new mongoose.Types.ObjectId(userId) } },
+    // Aggregate total and unique opens from OpenEvent collection for user's sent campaigns
+    const opensStats = await OpenEvent.aggregate([
+        { $match: { campaign: { $in: sentCampaignObjectIds } } },
         {
             $group: {
                 _id: null,
-                totalBounced: { $sum: '$bouncedCount' },
-                totalUnsubscribed: { $sum: '$unsubscribedCount' },
-                totalComplaints: { $sum: '$complaintCount' }
+                total: { $sum: 1 },
+                unique: { $addToSet: '$subscriber' }
             }
         },
         {
             $project: {
                 _id: 0,
-                totalBounced: 1,
-                totalUnsubscribed: 1,
-                totalComplaints: 1
+                total: 1,
+                unique: { $size: '$unique' }
             }
         }
     ]);
+    const totalOpens = opensStats.length > 0 ? opensStats[0].total : 0;
+    const uniqueOpens = opensStats.length > 0 ? opensStats[0].unique : 0;
 
-    const performance = overallCampaignStats.length > 0 ? overallCampaignStats[0] : {
-        totalBounced: 0,
-        totalUnsubscribed: 0,
-        totalComplaints: 0
-    };
+    // Aggregate total and unique clicks from ClickEvent collection for user's sent campaigns
+    const clicksStats = await ClickEvent.aggregate([
+        { $match: { campaign: { $in: sentCampaignObjectIds } } },
+        {
+            $group: {
+                _id: null,
+                total: { $sum: 1 },
+                unique: { $addToSet: '$subscriber' }
+            }
+        },
+        {
+            $project: {
+                _id: 0,
+                total: 1,
+                unique: { $size: '$unique' }
+            }
+        }
+    ]);
+    const totalClicks = clicksStats.length > 0 ? clicksStats[0].total : 0;
+    const uniqueClicks = clicksStats.length > 0 ? clicksStats[0].unique : 0;
 
     const openRate = totalEmailsSent > 0 ? (uniqueOpens / totalEmailsSent * 100) : 0;
     const clickRate = totalEmailsSent > 0 ? (uniqueClicks / totalEmailsSent * 100) : 0;
@@ -428,9 +455,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             uniqueOpens: uniqueOpens,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicks,
-            totalBounced: performance.totalBounced,
-            totalUnsubscribed: performance.totalUnsubscribed,
-            totalComplaints: performance.totalComplaints,
+            totalBounced: totalBounced,
+            totalUnsubscribed: totalUnsubscribed,
+            totalComplaints: totalComplaints,
             openRate: parseFloat(openRate.toFixed(2)),
             clickRate: parseFloat(clickRate.toFixed(2))
         }
@@ -441,7 +468,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/analytics
 // @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
-    const { id: campaignId } = req.params; // Destructure and rename id to campaignId for clarity
+    const { id: campaignId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(campaignId)) {
         res.status(400);
@@ -467,7 +494,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         // Calculate Unique Opens
         const uniqueOpens = await OpenEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
-            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
+            { $group: { _id: '$subscriber' } },
             { $count: 'uniqueCount' }
         ]);
         const uniqueOpensCount = uniqueOpens.length > 0 ? uniqueOpens[0].uniqueCount : 0;
@@ -478,7 +505,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         // Calculate Unique Clicks
         const uniqueClicks = await ClickEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
-            { $group: { _id: '$subscriber' } }, // Group by subscriber to count unique ones
+            { $group: { _id: '$subscriber' } },
             { $count: 'uniqueCount' }
         ]);
         const uniqueClicksCount = uniqueClicks.length > 0 ? uniqueClicks[0].uniqueCount : 0;
@@ -490,20 +517,19 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 
         res.status(200).json({
             campaignId: campaignId,
-            name: campaign.name, // Include campaign name for context
-            emailsSent: emailsSent, // Number of emails attempted to send
+            name: campaign.name,
+            emailsSent: emailsSent,
             totalOpens: totalOpens,
             uniqueOpens: uniqueOpensCount,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicksCount,
-            // You can add other stats from campaign model if relevant and updated
             bounced: campaign.bouncedCount || 0,
             unsubscribed: campaign.unsubscribedCount || 0,
             complaints: campaign.complaintCount || 0,
             status: campaign.status,
             lastSentAt: campaign.lastSentAt,
-            openRate: openRate, // Calculated from unique opens
-            clickRate: clickRate // Calculated from unique clicks
+            openRate: openRate,
+            clickRate: clickRate
         });
 
     } catch (error) {
@@ -664,5 +690,5 @@ module.exports = {
     sendCampaign: sendCampaignManually,
     getDashboardStats,
     getCampaignAnalytics,
-    getCampaignAnalyticsTimeSeries, // Export the new function
+    getCampaignAnalyticsTimeSeries,
 };
