@@ -17,7 +17,7 @@ const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
  * It expects the raw request body to be available on req.rawBody (captured by server.js middleware).
  */
 exports.verifyWebhookSignature = (req, res, next) => {
-    // --- DEBUG LOGS: These logs will now execute IMMEDIATELY when the middleware is entered. ---
+    // These debug logs should be the FIRST THING printed when this middleware is entered.
     const signature = req.headers['x-twilio-email-event-webhook-signature'];
     const timestamp = req.headers['x-twilio-email-event-webhook-timestamp'];
     const payload = req.rawBody; // This comes from the server.js middleware
@@ -61,33 +61,26 @@ exports.verifyWebhookSignature = (req, res, next) => {
             res.status(401).send('Unauthorized: Invalid signature');
         }
     } catch (error) {
+        // Log the error but send 200 OK to SendGrid to prevent indefinite retries.
         logger.error('[Webhook Verification Error]', error);
-        // Do not send 500 status to SendGrid, as they will retry indefinitely.
-        // Log the error and send 200, letting SendGrid know we "processed" it (even if with an internal error).
         res.status(200).send('Webhook processed with internal verification error.');
     }
 };
 
 /**
  * @desc Handle SendGrid Webhook events (processed, delivered, open, click, bounce, etc.)
- * This endpoint receives event data from SendGrid.
- * It's crucial to set up this URL in your SendGrid account under Settings > Mail Settings > Event Webhook.
- * DO NOT send a 200 OK response until you have successfully processed the event, or SendGrid will retry.
  */
 exports.handleWebhook = async (req, res) => {
-    // req.body is already parsed into a JSON array of events by express.json()
     logger.log('[Webhook] Received SendGrid events:', req.body.length, 'events');
 
     for (const event of req.body) {
         logger.log(`[Webhook] Processing event: ${event.event} for ${event.email}, Campaign ID: ${event.campaignId}, Subscriber ID: ${event.subscriberId}, List ID: ${event.listId}`);
 
-        // Extract custom arguments. These should now be present if verification passed.
         const { campaignId, subscriberId, listId } = event.custom_args || {};
 
-        // Basic validation for required IDs from custom_args
         if (!campaignId || !subscriberId || !listId) {
             logger.warn(`[Webhook] Missing custom_args for event type ${event.event}. Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}. Skipping processing for this event.`);
-            continue; // Continue to the next event in the batch
+            continue;
         }
 
         try {
@@ -115,19 +108,14 @@ exports.handleWebhook = async (req, res) => {
                 case 'bounce':
                     logger.log(`[Webhook] Email bounced for ${event.email}, Reason: ${event.reason}`);
                     await Campaign.findByIdAndUpdate(campaignId, { $inc: { bouncedCount: 1 } });
-                    // Consider updating subscriber status to 'bounced' if it's a hard bounce
-                    // if (event.type === 'hardbounce') {
-                    //    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'bounced' });
-                    // }
                     break;
-                case 'dropped': // Email dropped due to prior bounce, unsubscribe, invalid email, etc.
+                case 'dropped':
                     logger.log(`[Webhook] Email dropped for ${event.email}, Reason: ${event.reason}`);
-                    // Increment a dropped count or update subscriber status if appropriate
                     break;
                 case 'spamreport':
                     logger.log(`[Webhook] Spam report from ${event.email}`);
                     await Campaign.findByIdAndUpdate(campaignId, { $inc: { complaintCount: 1 } });
-                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' }); // Auto-unsubscribe
+                    await Subscriber.findByIdAndUpdate(subscriberId, { status: 'unsubscribed' });
                     break;
                 case 'unsubscribe':
                     logger.log(`[Webhook] Email unsubscribed by ${event.email}`);
@@ -136,11 +124,9 @@ exports.handleWebhook = async (req, res) => {
                     break;
                 case 'delivered':
                     logger.log(`[Webhook] Email delivered to ${event.email}`);
-                    // No specific action usually needed here if emailsSent is already updated
                     break;
                 case 'processed':
                     logger.log(`[Webhook] Email processed by SendGrid for ${event.email}`);
-                    // No specific action usually needed here
                     break;
                 default:
                     logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
@@ -148,25 +134,17 @@ exports.handleWebhook = async (req, res) => {
 
         } catch (error) {
             logger.error(`[Webhook Error] Failed to process event for ${event.email}, type ${event.event}:`, error);
-            // Log the error but continue processing other events in the batch.
-            // Do not send a 500 status here, as SendGrid will retry the entire batch.
         }
     }
-
-    // Always send a 200 OK after attempting to process all events to tell SendGrid not to retry this batch.
     res.status(200).send('Webhook received and processed');
 };
 
 /**
  * @desc Handle direct unsubscribe link clicks.
- * This is for your custom unsubscribe link that you inject into the email content.
- * Your SendGrid webhook will also catch unsubscribe events if SendGrid automatically adds unsubscribe links.
- * @route GET /api/track/unsubscribe/:subscriberId
- * @access Public (accessible from email)
  */
 exports.unsubscribe = async (req, res) => {
     const { subscriberId } = req.params;
-    const { campaignId } = req.query; // If you want to track which campaign they unsubscribed from
+    const { campaignId } = req.query;
 
     logger.log(`[Unsubscribe] Attempting to unsubscribe subscriber ID: ${subscriberId} from campaign ID: ${campaignId || 'N/A'}`);
 
@@ -187,14 +165,12 @@ exports.unsubscribe = async (req, res) => {
         await subscriber.save();
         logger.log(`[Unsubscribe] Subscriber ${subscriberId} successfully unsubscribed.`);
 
-        // Optionally, update campaign unsubscribed count immediately (webhook might do this too)
         if (campaignId) {
             await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
             logger.log(`[Unsubscribe] Campaign ${campaignId} unsubscribed count incremented.`);
         }
 
-        // Render a simple confirmation page or redirect
-        res.status(200).send('You have successfully unsubscribed.'); // Or send an HTML confirmation page
+        res.status(200).send('You have successfully unsubscribed.');
     } catch (error) {
         logger.error(`[Unsubscribe Error] Failed to unsubscribe subscriber ${subscriberId}:`, error);
         res.status(500).send('An error occurred during unsubscribe.');
