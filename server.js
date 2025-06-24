@@ -29,12 +29,13 @@ connectDB();
 // This MUST come BEFORE express.json()
 app.use('/api/track/webhook', (req, res, next) => {
   getRawBody(req)
-    .then((buf) => {
-      req.rawBody = buf.toString('utf8'); // SendGrid requires raw string
+    .then(buf => {
+      req.rawBody = buf.toString('utf8');  // Must be string for SendGrid verifySignature
       next();
     })
-    .catch((err) => {
-      next(err);
+    .catch(err => {
+      console.error('Error parsing raw body:', err);
+      res.status(400).send('Invalid request body');
     });
 });
 // --- END RAW BODY HANDLER ---
