@@ -5,9 +5,32 @@ const Subscriber = require('../models/Subscriber');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
-// This needs to be the SendGrid Webhook Public Key (PEM format)
-// Ensure your Railway environment variable SENDGRID_WEBHOOK_SECRET holds this full PEM key.
-const SENDGRID_WEBHOOK_PUBLIC_KEY = process.env.SENDGRID_WEBHOOK_SECRET;
+// The SENDGRID_WEBHOOK_SECRET environment variable is expected to be the Base64 encoded DER public key.
+const SENDGRID_WEBHOOK_PUBLIC_KEY_DER_BASE64 = process.env.SENDGRID_WEBHOOK_SECRET;
+
+let sendGridPublicKeyObject = null;
+
+// Attempt to parse the public key into a KeyObject when the module loads
+if (SENDGRID_WEBHOOK_PUBLIC_KEY_DER_BASE64) {
+    try {
+        // Construct a DER-encoded Buffer for crypto.createPublicKey
+        const derBuffer = Buffer.from(SENDGRID_WEBHOOK_PUBLIC_KEY_DER_BASE64, 'base64');
+        
+        sendGridPublicKeyObject = crypto.createPublicKey({
+            key: derBuffer,
+            type: 'spki', // SubjectPublicKeyInfo, which is what DER public keys typically are
+            format: 'der'
+        });
+        logger.log('[DEBUG - Webhook Verify] SendGrid public key successfully loaded as KeyObject.');
+    } catch (e) {
+        logger.error(`[ERROR - Webhook Verify] Failed to parse SendGrid public key from environment variable: ${e.message}`);
+        logger.error(`[ERROR - Webhook Verify] Ensure SENDGRID_WEBHOOK_SECRET is the correct Base64 DER public key.`);
+        // Set to null to ensure verification is skipped or fails if key is bad
+        sendGridPublicKeyObject = null;
+    }
+} else {
+    logger.warn('[Webhook] SENDGRID_WEBHOOK_SECRET environment variable is not set.');
+}
 
 /**
  * @desc Middleware to verify SendGrid webhook signatures
@@ -27,18 +50,23 @@ exports.verifyWebhookSignature = (req, res, next) => {
     logger.log(`[DEBUG - Webhook Verify] Raw Body exists: ${!!payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body type: ${typeof payload}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body length: ${payload?.length || 0}`);
-    logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_PUBLIC_KEY set: ${!!SENDGRID_WEBHOOK_PUBLIC_KEY}`);
+    logger.log(`[DEBUG - Webhook Verify] sendGridPublicKeyObject is ready: ${!!sendGridPublicKeyObject}`);
 
-    // Skip verification if no public key is configured
-    if (!SENDGRID_WEBHOOK_PUBLIC_KEY) {
-        logger.warn('[Webhook] No webhook public key configured — skipping verification');
+    // Skip verification if public key could not be loaded
+    if (!sendGridPublicKeyObject) {
+        logger.warn('[Webhook] Public key object not available — skipping verification');
         // Parse the JSON body for the next middleware
         try {
             req.body = JSON.parse(payload.toString());
         } catch (e) {
             req.body = [];
         }
-        return next();
+        // In development, allow skipping for testing, but in production, this should ideally fail or be handled differently.
+        if (process.env.NODE_ENV === 'development') {
+            logger.warn('[Webhook] Allowing webhook with no public key object in development mode.');
+            return next();
+        }
+        return res.status(401).json({ error: 'Unauthorized: Webhook public key not configured or invalid' });
     }
 
     // Check for required headers and payload
@@ -66,53 +94,39 @@ exports.verifyWebhookSignature = (req, res, next) => {
         // The data that was signed by SendGrid: timestamp + raw_body
         const signedPayloadBuffer = Buffer.from(timestamp + payload.toString('utf8'), 'utf8');
 
-        // SendGrid sends signature in format "v1=signature1,v1=signature2"
-        const signatures = signatureHeader.split(',').map(s => s.trim());
-        
+        // Based on the logs, the signatureHeader itself is the Base64 signature,
+        // not a comma-separated list with 'v1=' prefixes.
+        const sigValueBase64 = signatureHeader; // Directly use the header as the Base64 signature
+
+        logger.log(`[DEBUG - Webhook Verify] Extracted Base64 signature value from header: "${sigValueBase64}"`);
+
+        let signatureBuffer;
+        try {
+            signatureBuffer = Buffer.from(sigValueBase64, 'base64');
+            logger.log(`[DEBUG - Webhook Verify] Base64 signature converted to buffer. Length: ${signatureBuffer.length}`);
+        } catch (bufferError) {
+            logger.error(`[DEBUG - Webhook Verify] Failed to convert Base64 signature to buffer: ${bufferError.message}`);
+            return res.status(401).json({ error: 'Unauthorized: Malformed signature header' });
+        }
+
+        // Perform ECDSA P-256 SHA-256 verification
         let isVerified = false;
-        for (const sigPart of signatures) {
-            if (!sigPart.startsWith('v1=')) {
-                logger.warn(`[DEBUG - Webhook Verify] Skipping non-v1 signature part: "${sigPart}"`);
-                continue;
-            }
-            
-            const sigValueBase64 = sigPart.substring(3); // Extract Base64 part after "v1="
+        try {
+            const verified = crypto.verify(
+                'sha256', // The hash algorithm used by SendGrid
+                signedPayloadBuffer, // The data that was signed (timestamp + raw body)
+                sendGridPublicKeyObject, // The KeyObject created from the public key
+                signatureBuffer // The actual signature bytes from the header (Base64 decoded)
+            );
 
-            logger.log(`[DEBUG - Webhook Verify] Processing signature part: "${sigPart}"`);
-            logger.log(`[DEBUG - Webhook Verify] Extracted Base64 signature value: "${sigValueBase64}"`);
-
-            // Convert Base64 signature to a Buffer
-            let signatureBuffer;
-            try {
-                signatureBuffer = Buffer.from(sigValueBase64, 'base64');
-                logger.log(`[DEBUG - Webhook Verify] Base64 signature converted to buffer. Length: ${signatureBuffer.length}`);
-            } catch (bufferError) {
-                logger.error(`[DEBUG - Webhook Verify] Failed to convert Base64 signature to buffer: ${bufferError.message}`);
-                continue; // Try next signature if conversion fails
+            if (verified) {
+                isVerified = true;
+            } else {
+                logger.warn(`[DEBUG - Webhook Verify] Signature failed verification.`);
             }
-
-            // Perform ECDSA P-256 SHA-256 verification
-            // The public key must be in a format Node.js crypto understands (e.g., PEM).
-            try {
-                const verified = crypto.verify(
-                    'sha256', // The hash algorithm used by SendGrid
-                    signedPayloadBuffer, // The data that was signed (timestamp + raw body)
-                    SENDGRID_WEBHOOK_PUBLIC_KEY, // The public key from SendGrid (from env var)
-                    signatureBuffer // The actual signature bytes from the header (Base64 decoded)
-                );
-    
-                if (verified) {
-                    isVerified = true;
-                    break; // Found a valid signature
-                } else {
-                    logger.warn(`[DEBUG - Webhook Verify] Signature part "${sigPart}" failed verification.`);
-                }
-            } catch (verifyError) {
-                logger.error(`[DEBUG - Webhook Verify] Error during crypto.verify: ${verifyError.message}`);
-                // This might happen if the public key format is incorrect or signature is malformed.
-                // Continue to next signature part if available.
-                continue; 
-            }
+        } catch (verifyError) {
+            logger.error(`[DEBUG - Webhook Verify] Error during crypto.verify: ${verifyError.message}`);
+            // This might happen if the public key object is somehow invalid or signature is malformed.
         }
         
         if (isVerified) {
@@ -122,7 +136,6 @@ exports.verifyWebhookSignature = (req, res, next) => {
             next();
         } else {
             logger.error('[Webhook Verification] Signature verification failed');
-            logger.error(`[Webhook Verification] Public key used: ${SENDGRID_WEBHOOK_PUBLIC_KEY ? SENDGRID_WEBHOOK_PUBLIC_KEY.substring(0, 50) + '...' : 'Not set'}`); // Log part of key for debug
             logger.error(`[Webhook Verification] Received signature header: ${signatureHeader}`);
             
             // In development, allow failed verification for testing
