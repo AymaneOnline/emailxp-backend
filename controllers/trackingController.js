@@ -17,10 +17,26 @@ exports.verifyWebhookSignature = (req, res, next) => {
     const payload = req.rawBody;
 
     logger.log(`[DEBUG - Webhook Verify] === Entering verification middleware ===`);
+    logger.log(`[DEBUG - Webhook Verify] Request URL: ${req.originalUrl}`);
+    logger.log(`[DEBUG - Webhook Verify] Request Method: ${req.method}`);
+    logger.log(`[DEBUG - Webhook Verify] Content-Type: ${req.headers['content-type']}`);
+    logger.log(`[DEBUG - Webhook Verify] Content-Length: ${req.headers['content-length']}`);
     logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signature}"`);
     logger.log(`[DEBUG - Webhook Verify] Timestamp Header: "${timestamp}"`);
+    logger.log(`[DEBUG - Webhook Verify] Raw Body exists: ${!!payload}`);
+    logger.log(`[DEBUG - Webhook Verify] Raw Body type: ${typeof payload}`);
+    logger.log(`[DEBUG - Webhook Verify] Raw Body length: ${payload?.length || 0}`);
     logger.log(`[DEBUG - Webhook Verify] Raw Body Preview: "${payload?.toString().substring(0, 100)}"`);
+    logger.log(`[DEBUG - Webhook Verify] Request Body exists: ${!!req.body}`);
+    logger.log(`[DEBUG - Webhook Verify] Request Body type: ${typeof req.body}`);
+    logger.log(`[DEBUG - Webhook Verify] Request Body: ${JSON.stringify(req.body)}`);
     logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_SECRET set: ${!!SENDGRID_WEBHOOK_SECRET}`);
+
+    // If no raw body, try to create it from req.body
+    if (!payload && req.body) {
+        logger.log('[DEBUG - Webhook Verify] No raw body found, creating from req.body');
+        req.rawBody = Buffer.from(JSON.stringify(req.body), 'utf8');
+    }
 
     // Skip verification if no webhook secret is configured
     if (!SENDGRID_WEBHOOK_SECRET) {
@@ -29,9 +45,9 @@ exports.verifyWebhookSignature = (req, res, next) => {
     }
 
     // Check for required headers and payload
-    if (!signature || !timestamp || !payload) {
-        logger.error('[Webhook Verification] Missing required signature headers or body');
-        logger.error(`[Webhook Verification] signature: ${!!signature}, timestamp: ${!!timestamp}, payload: ${!!payload}`);
+    if (!signature || !timestamp) {
+        logger.error('[Webhook Verification] Missing required signature headers');
+        logger.error(`[Webhook Verification] signature: ${!!signature}, timestamp: ${!!timestamp}`);
         
         // In development, allow unsigned webhooks for testing
         if (process.env.NODE_ENV === 'development') {
@@ -39,7 +55,19 @@ exports.verifyWebhookSignature = (req, res, next) => {
             return next();
         }
         
-        return res.status(401).json({ error: 'Unauthorized: Missing required data' });
+        return res.status(401).json({ error: 'Unauthorized: Missing signature headers' });
+    }
+
+    if (!req.rawBody) {
+        logger.error('[Webhook Verification] No payload found for verification');
+        
+        // In development, allow webhooks without payload for testing
+        if (process.env.NODE_ENV === 'development') {
+            logger.warn('[Webhook] Allowing webhook without payload in development mode');
+            return next();
+        }
+        
+        return res.status(401).json({ error: 'Unauthorized: Missing payload' });
     }
 
     try {
@@ -54,7 +82,7 @@ exports.verifyWebhookSignature = (req, res, next) => {
         // Verify the signature using the correct method signature
         const isVerified = eventWebhook.verifySignature(
             ecPublicKey,
-            payload.toString(),
+            req.rawBody.toString(),
             signature,
             timestamp
         );
