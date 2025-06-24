@@ -17,6 +17,8 @@ const templateRoutes = require('./routes/templateRoutes');
 
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
 
+const getRawBody = require('raw-body');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -24,22 +26,16 @@ const PORT = process.env.PORT || 5000;
 connectDB();
 
 // --- RAW BODY PARSING FOR SENDGRID WEBHOOK VERIFICATION ---
-// This must come BEFORE express.json()
-app.use((req, res, next) => {
-    if (req.originalUrl === '/api/track/webhook') {
-        const chunks = [];
-
-        req.on('data', chunk => {
-            chunks.push(chunk);
-        });
-
-        req.on('end', () => {
-            req.rawBody = Buffer.concat(chunks);
-            next();
-        });
-    } else {
-        next();
-    }
+// This MUST come BEFORE express.json()
+app.use('/api/track/webhook', (req, res, next) => {
+  getRawBody(req)
+    .then((buf) => {
+      req.rawBody = buf.toString('utf8'); // SendGrid requires raw string
+      next();
+    })
+    .catch((err) => {
+      next(err);
+    });
 });
 // --- END RAW BODY HANDLER ---
 
@@ -50,7 +46,7 @@ app.use(express.urlencoded({ extended: false }));
 
 // Basic Route
 app.get('/', (req, res) => {
-    res.send('Email Marketing App Backend is running!');
+  res.send('Email Marketing App Backend is running!');
 });
 
 // Use Routes
@@ -63,15 +59,15 @@ app.use('/api/templates', templateRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
-    const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-    res.status(statusCode).json({
-        message: err.message,
-        stack: process.env.NODE_ENV === 'production' ? null : err.stack,
-    });
+  const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  res.status(statusCode).json({
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+  });
 });
 
 // Start Server
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    startCampaignScheduler();
+  console.log(`Server running on port ${PORT}`);
+  startCampaignScheduler();
 });
