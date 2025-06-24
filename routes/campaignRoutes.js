@@ -1,3 +1,5 @@
+// emailxp/backend/routes/campaignRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
@@ -7,11 +9,10 @@ const {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually, // Renamed for clarity in controller import
-    // REMOVED: getCampaignOpenStats, getCampaignClickStats as they are no longer in campaignController.js
+    sendCampaign: sendCampaignManually,
     getDashboardStats,
     getCampaignAnalytics,
-    // REMOVED: handleSendGridWebhook as it is now in trackingController.js
+    getCampaignAnalyticsTimeSeries, // Import the new function
 } = require('../controllers/campaignController');
 
 // All campaign routes are protected (except external webhooks which are handled elsewhere)
@@ -24,6 +25,9 @@ router.get('/dashboard-stats', protect, getDashboardStats);
 // Campaign Specific Analytics - This is the consolidated analytics route
 router.get('/:id/analytics', protect, getCampaignAnalytics);
 
+// Add this new route for time-series analytics
+router.get('/:id/analytics/time-series', protect, getCampaignAnalyticsTimeSeries);
+
 router.route('/')
     .get(protect, getCampaigns)
     .post(protect, createCampaign);
@@ -34,6 +38,6 @@ router.route('/:id')
     .delete(protect, deleteCampaign);
 
 // Route for manual campaign sending
-router.post('/:id/send', protect, sendCampaignManually); // Using the renamed function
+router.post('/:id/send', protect, sendCampaignManually);
 
 module.exports = router;
