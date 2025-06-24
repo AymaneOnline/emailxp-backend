@@ -2,9 +2,8 @@
 
 require('dotenv').config();
 
-// --- ADD THIS LINE FOR DEBUGGING ---
+// --- DEBUG LOG TO CHECK WEBHOOK SECRET ---
 console.log(`[DEBUG - Env Check] SENDGRID_WEBHOOK_SECRET from process.env: "${process.env.SENDGRID_WEBHOOK_SECRET}"`);
-// --- END DEBUG ---
 
 const express = require('express');
 const cors = require('cors');
@@ -14,7 +13,7 @@ const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
 const trackingRoutes = require('./routes/trackingRoutes');
-const templateRoutes = require('./routes/templateRoutes'); 
+const templateRoutes = require('./routes/templateRoutes');
 
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
 
@@ -24,56 +23,54 @@ const PORT = process.env.PORT || 5000;
 // Connect to Database
 connectDB();
 
-// Middleware
-app.use(cors());
-
-// --- MODIFICATION FOR SENDGRID WEBHOOK RAW BODY ---
-// This middleware MUST come BEFORE express.json() and express.urlencoded()
-// and specifically before the webhook route is hit.
+// --- RAW BODY PARSING FOR SENDGRID WEBHOOK VERIFICATION ---
+// This must come BEFORE express.json()
 app.use((req, res, next) => {
-    if (req.originalUrl === '/api/track/webhook') { // Only apply to webhook route
-        let data = '';
+    if (req.originalUrl === '/api/track/webhook') {
+        const chunks = [];
+
         req.on('data', chunk => {
-            data += chunk;
+            chunks.push(chunk);
         });
+
         req.on('end', () => {
-            req.rawBody = data;
+            req.rawBody = Buffer.concat(chunks);
             next();
         });
     } else {
         next();
     }
 });
-// --- END MODIFICATION ---
+// --- END RAW BODY HANDLER ---
 
-app.use(express.json()); // For parsing application/json
-app.use(express.urlencoded({ extended: false })); // For parsing application/x-www-form-urlencoded
+// General Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-// Basic Route for testing
+// Basic Route
 app.get('/', (req, res) => {
     res.send('Email Marketing App Backend is running!');
 });
 
-// Use routes
+// Use Routes
 app.use('/api/users', userRoutes);
 app.use('/api/lists', listRoutes);
 app.use('/api/campaigns', campaignRoutes);
-
 app.use('/api/lists/:listId/subscribers', subscriberRoutes);
-
-app.use('/api/track', trackingRoutes); // Existing tracking routes, now primarily for webhooks and unsubscribe.
-app.use('/api/templates', templateRoutes); // Use template routes
+app.use('/api/track', trackingRoutes);
+app.use('/api/templates', templateRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-    res.status(statusCode);
-    res.json({
+    res.status(statusCode).json({
         message: err.message,
         stack: process.env.NODE_ENV === 'production' ? null : err.stack,
     });
 });
 
+// Start Server
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     startCampaignScheduler();

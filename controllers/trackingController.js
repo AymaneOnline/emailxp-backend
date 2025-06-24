@@ -4,17 +4,14 @@ const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
 const logger = require('../utils/logger');
 
-// --- NEW IMPORTS FOR WEBHOOK VERIFICATION ---
-const { EventWebhook } = require('@sendgrid/eventwebhook');
-// --- END NEW IMPORTS ---
+// ✅ CORRECT IMPORTS FOR SIGNATURE VERIFICATION
+const { EventWebhook, convertPublicKeyToPEM } = require('@sendgrid/eventwebhook');
 
-// --- Get SendGrid Webhook Secret from environment variables ---
+// ✅ Load SendGrid public key from environment
 const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
 
 /**
  * @desc Middleware to verify SendGrid webhook signatures.
- * This is crucial when "Signed Events" is enabled in SendGrid.
- * It expects the raw request body to be available on req.rawBody (captured by server.js middleware).
  */
 exports.verifyWebhookSignature = (req, res, next) => {
     const signature = req.headers['x-twilio-email-event-webhook-signature'];
@@ -39,7 +36,7 @@ exports.verifyWebhookSignature = (req, res, next) => {
 
     try {
         const webhook = new EventWebhook();
-        const publicKey = webhook.convertPublicKeyToPEM(SENDGRID_WEBHOOK_SECRET);
+        const publicKey = convertPublicKeyToPEM(SENDGRID_WEBHOOK_SECRET);
 
         const isVerified = webhook.verifySignature(
             publicKey,
@@ -125,6 +122,7 @@ exports.handleWebhook = async (req, res) => {
                 default:
                     logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
             }
+
         } catch (error) {
             logger.error(`[Webhook Error] Failed to process event for ${event.email}, type ${event.event}:`, error);
         }
