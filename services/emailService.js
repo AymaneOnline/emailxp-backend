@@ -10,7 +10,7 @@ const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-ba
 /**
  * @desc Sends an email using SendGrid.
  */
-const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId, listId) => {
+const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
     const log = (...args) => console.log(`[EmailService]`, ...args);
     const errorLog = (...args) => console.error(`[EmailService]`, ...args);
     const warnLog = (...args) => console.warn(`[EmailService]`, ...args);
@@ -20,7 +20,6 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     let finalHtmlContent = htmlContent;
     let finalPlainTextContent = plainTextContent;
 
-    // If plain text is empty, try converting HTML
     if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
         log('Plain text content is empty. Attempting to convert HTML to plain text...');
         try {
@@ -46,27 +45,21 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         }
     }
 
-    // Construct email message with custom_args inside personalizations (listId removed)
     const msg = {
         from: process.env.SENDGRID_SENDER_EMAIL,
+        to: toEmail,
         subject: subject,
         html: finalHtmlContent,
         text: finalPlainTextContent,
-        personalizations: [
-            {
-                to: [{ email: toEmail }],
-                custom_args: {
-                    campaignId: campaignId ? campaignId.toString() : '',
-                    subscriberId: subscriberId ? subscriberId.toString() : ''
-                    // listId removed due to encoding issue
-                }
-            }
-        ]
+        custom_args: {
+            campaignId: campaignId ? campaignId.toString() : '',
+            subscriberId: subscriberId ? subscriberId.toString() : ''
+        }
     };
 
-    log(`Message object prepared for SendGrid (to: ${toEmail}, from: ${msg.from}, subject: ${msg.subject})`);
-    log(`Custom Args being sent to SendGrid: `, msg.personalizations[0].custom_args);
-    log('[EmailService] Final message to SendGrid:', JSON.stringify(msg, null, 2)); // Extra debug line
+    log(`Message object prepared for SendGrid (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);
+    log(`Custom Args being sent to SendGrid: `, msg.custom_args);
+    log('[EmailService] Final message to SendGrid:', JSON.stringify(msg, null, 2));
 
     if (!msg.text || msg.text.length === 0) {
         errorLog('Plain text content is still empty before sending! Email not sent.');
