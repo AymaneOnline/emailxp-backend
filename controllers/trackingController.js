@@ -69,7 +69,7 @@ exports.verifyWebhookSignature = (req, res, next) => {
         const expectedSignature = crypto
             .createHmac('sha256', SENDGRID_WEBHOOK_SECRET)
             .update(signedPayload)
-            .digest('hex'); // <--- CRITICAL CHANGE: Changed from 'base64' to 'hex'
+            .digest('hex');
         
         // SendGrid sends signature in format "v1,signature1,signature2"
         // We need to check if our expected signature matches any of the provided signatures
@@ -79,12 +79,25 @@ exports.verifyWebhookSignature = (req, res, next) => {
             // Remove "v1=" prefix if present
             const sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
             
-            logger.log(`[DEBUG - Webhook Verify] Comparing: Expected (hex): ${expectedSignature}, Received (hex): ${sigValue}`);
+            logger.log(`[DEBUG - Webhook Verify] --- Inside some() loop ---`);
+            logger.log(`[DEBUG - Webhook Verify] Raw 'sig' part: "${sig}"`);
+            logger.log(`[DEBUG - Webhook Verify] Cleaned 'sigValue': "${sigValue}" (length: ${sigValue.length})`);
+            logger.log(`[DEBUG - Webhook Verify] Expected Signature: "${expectedSignature}" (length: ${expectedSignature.length})`);
             
+            // Check expected byte lengths BEFORE conversion
+            logger.log(`[DEBUG - Webhook Verify] Expected byte length for sigValue: ${Buffer.byteLength(sigValue, 'hex')}`);
+            logger.log(`[DEBUG - Webhook Verify] Expected byte length for expectedSignature: ${Buffer.byteLength(expectedSignature, 'hex')}`);
+
             // Convert both to buffers using 'hex' encoding for a byte-by-byte comparison
+            const bufferExpected = Buffer.from(expectedSignature, 'hex');
+            const bufferReceived = Buffer.from(sigValue, 'hex');
+
+            logger.log(`[DEBUG - Webhook Verify] Buffer.from(expectedSignature, 'hex') length: ${bufferExpected.length}`);
+            logger.log(`[DEBUG - Webhook Verify] Buffer.from(sigValue, 'hex') length: ${bufferReceived.length}`);
+
             return crypto.timingSafeEqual(
-                Buffer.from(expectedSignature, 'hex'), // Explicitly convert expected to hex buffer
-                Buffer.from(sigValue, 'hex')         // Explicitly convert received to hex buffer
+                bufferExpected,
+                bufferReceived
             );
         });
 
