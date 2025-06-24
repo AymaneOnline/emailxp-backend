@@ -5,7 +5,7 @@ const Campaign = require('../models/Campaign');
 const List = require('../models/List');
 const Subscriber = require('../models/Subscriber');
 const Template = require('../models/Template');
-const mongoose = require('mongoose');
+const mongoose = require('mongoose'); // Make sure mongoose is imported for ObjectId
 
 const { sendEmail } = require('../services/emailService');
 
@@ -303,6 +303,129 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
     }
 });
+
+// @desc    Get aggregate dashboard statistics for the authenticated user
+// @route   GET /api/campaigns/dashboard-stats
+// @access  Private
+const getDashboardStats = asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Total Campaigns
+    const totalCampaigns = await Campaign.countDocuments({ user: userId });
+
+    // Total Lists
+    const totalLists = await List.countDocuments({ user: userId });
+
+    // Total Subscribers
+    const totalSubscribers = await Subscriber.countDocuments({ user: userId });
+
+    // Campaigns Sent
+    const campaignsSent = await Campaign.countDocuments({ user: userId, status: 'sent' });
+
+    // Recent Campaigns (last 7 days)
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 7);
+    const recentCampaigns = await Campaign.find({
+        user: userId,
+        lastSentAt: { $gte: sevenDaysAgo }
+    }).sort({ lastSentAt: -1 }).limit(5);
+
+    // Aggregate email performance
+    const performanceStats = await Campaign.aggregate([
+        { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent' } },
+        {
+            $group: {
+                _id: null,
+                totalEmailsSent: { $sum: '$emailsSent' },
+                totalOpens: { $sum: '$opens' },
+                totalClicks: { $sum: '$clicks' },
+                totalBounced: { $sum: '$bouncedCount' },
+                totalUnsubscribed: { $sum: '$unsubscribedCount' },
+                totalComplaints: { $sum: '$complaintCount' }
+            }
+        },
+        {
+            $project: {
+                _id: 0,
+                totalEmailsSent: 1,
+                totalOpens: 1,
+                totalClicks: 1,
+                totalBounced: 1,
+                totalUnsubscribed: 1,
+                totalComplaints: 1,
+                openRate: {
+                    $cond: [
+                        { $gt: ['$totalEmailsSent', 0] },
+                        { $multiply: [{ $divide: ['$totalOpens', '$totalEmailsSent'] }, 100] },
+                        0
+                    ]
+                },
+                clickRate: {
+                    $cond: [
+                        { $gt: ['$totalEmailsSent', 0] },
+                        { $multiply: [{ $divide: ['$totalClicks', '$totalEmailsSent'] }, 100] },
+                        0
+                    ]
+                }
+            }
+        }
+    ]);
+
+    res.status(200).json({
+        totalCampaigns,
+        totalLists,
+        totalSubscribers,
+        campaignsSent,
+        recentCampaigns,
+        performance: performanceStats[0] || {
+            totalEmailsSent: 0,
+            totalOpens: 0,
+            totalClicks: 0,
+            totalBounced: 0,
+            totalUnsubscribed: 0,
+            totalComplaints: 0,
+            openRate: 0,
+            clickRate: 0
+        }
+    });
+});
+
+// @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
+// @route   GET /api/campaigns/:id/analytics
+// @access  Private
+const getCampaignAnalytics = asyncHandler(async (req, res) => {
+    const campaign = await Campaign.findById(req.params.id);
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('Not authorized to view analytics for this campaign');
+    }
+
+    // For now, return basic stats from the campaign document itself
+    // In a real-world scenario, you might parse webhook logs for time-series data
+    res.status(200).json({
+        campaignId: campaign._id,
+        name: campaign.name,
+        emailsSent: campaign.emailsSent,
+        opens: campaign.opens,
+        clicks: campaign.clicks,
+        bounced: campaign.bouncedCount,
+        unsubscribed: campaign.unsubscribedCount,
+        complaints: campaign.complaintCount,
+        status: campaign.status,
+        lastSentAt: campaign.lastSentAt,
+        openRate: campaign.emailsSent > 0 ? (campaign.opens / campaign.emailsSent * 100) : 0,
+        clickRate: campaign.emailsSent > 0 ? (campaign.clicks / campaign.emailsSent * 100) : 0,
+    });
+});
+
 
 module.exports = {
     getCampaigns,
