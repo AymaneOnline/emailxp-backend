@@ -2,7 +2,7 @@
 
 const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
-const logger = require('../utils/logger'); // Assuming you have a logger utility
+const logger = require('../utils/logger');
 
 // --- NEW IMPORTS FOR WEBHOOK VERIFICATION ---
 const { EventWebhook } = require('@sendgrid/eventwebhook');
@@ -17,53 +17,47 @@ const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
  * It expects the raw request body to be available on req.rawBody (captured by server.js middleware).
  */
 exports.verifyWebhookSignature = (req, res, next) => {
-    // These debug logs should be the FIRST THING printed when this middleware is entered.
     const signature = req.headers['x-twilio-email-event-webhook-signature'];
     const timestamp = req.headers['x-twilio-email-event-webhook-timestamp'];
-    const payload = req.rawBody; // This comes from the server.js middleware
+    const payload = req.rawBody;
 
     logger.log(`[DEBUG - Webhook Verify] === Entering verification middleware ===`);
-    logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signature}" (type: ${typeof signature})`);
-    logger.log(`[DEBUG - Webhook Verify] Timestamp Header: "${timestamp}" (type: ${typeof timestamp})`);
-    logger.log(`[DEBUG - Webhook Verify] Raw Body Content (first 100 chars): "${payload ? payload.substring(0, Math.min(payload.length, 100)) : 'N/A'}" (type: ${typeof payload}, length: ${payload ? payload.length : 'N/A'})`);
+    logger.log(`[DEBUG - Webhook Verify] Signature Header: "${signature}"`);
+    logger.log(`[DEBUG - Webhook Verify] Timestamp Header: "${timestamp}"`);
+    logger.log(`[DEBUG - Webhook Verify] Raw Body Preview: "${payload?.toString().substring(0, 100)}"`);
     logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_SECRET set: ${!!SENDGRID_WEBHOOK_SECRET}`);
-    // --- END DEBUG LOGS ---
 
-    // If no secret, or if we're not in production and it's missing (for dev convenience)
     if (!SENDGRID_WEBHOOK_SECRET) {
-        logger.warn('[Webhook] SENDGRID_WEBHOOK_SECRET is not set. Skipping webhook signature verification.');
-        return next(); // Skip verification and proceed
+        logger.warn('[Webhook] SENDGRID_WEBHOOK_SECRET is not set. Skipping verification.');
+        return next();
     }
 
-    // Check for essential headers and raw body
     if (!signature || !timestamp || !payload) {
-        logger.error('[Webhook Verification] Missing signature, timestamp, or raw body. Rejecting webhook.');
+        logger.error('[Webhook Verification] Missing required data.');
         return res.status(401).send('Unauthorized: Missing required webhook data');
     }
 
     try {
-        const eb = new EventWebhook(SENDGRID_WEBHOOK_SECRET);
-        
-        // Verify the signature using the raw payload
-        const isVerified = eb.verifySignature(
-            {
-                signature: signature,
-                timestamp: timestamp,
-                payload: payload
-            }
+        const webhook = new EventWebhook();
+        const publicKey = webhook.convertPublicKeyToPEM(SENDGRID_WEBHOOK_SECRET);
+
+        const isVerified = webhook.verifySignature(
+            publicKey,
+            payload,
+            signature,
+            timestamp
         );
 
         if (isVerified) {
             logger.log('[Webhook Verification] Signature verified successfully.');
-            next(); // Proceed to the next middleware (handleWebhook)
+            next();
         } else {
-            logger.error('[Webhook Verification] Invalid signature. Rejecting webhook.');
+            logger.error('[Webhook Verification] Invalid signature.');
             res.status(401).send('Unauthorized: Invalid signature');
         }
     } catch (error) {
-        // Log the error but send 200 OK to SendGrid to prevent indefinite retries.
         logger.error('[Webhook Verification Error]', error);
-        res.status(200).send('Webhook processed with internal verification error.');
+        res.status(200).send('Webhook received with internal verification error.');
     }
 };
 
@@ -131,11 +125,11 @@ exports.handleWebhook = async (req, res) => {
                 default:
                     logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
             }
-
         } catch (error) {
             logger.error(`[Webhook Error] Failed to process event for ${event.email}, type ${event.event}:`, error);
         }
     }
+
     res.status(200).send('Webhook received and processed');
 };
 
