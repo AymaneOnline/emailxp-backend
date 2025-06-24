@@ -46,7 +46,7 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         }
     }
 
-    // Construct email message with custom_args inside personalizations
+    // Construct email message with custom_args inside personalizations (listId removed)
     const msg = {
         from: process.env.SENDGRID_SENDER_EMAIL,
         subject: subject,
@@ -57,8 +57,8 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
                 to: [{ email: toEmail }],
                 custom_args: {
                     campaignId: campaignId ? campaignId.toString() : '',
-                    subscriberId: subscriberId ? subscriberId.toString() : '',
-                    listId: listId ? listId.id?.toString() || '' : ''
+                    subscriberId: subscriberId ? subscriberId.toString() : ''
+                    // listId removed due to encoding issue
                 }
             }
         ]
@@ -66,6 +66,7 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
 
     log(`Message object prepared for SendGrid (to: ${toEmail}, from: ${msg.from}, subject: ${msg.subject})`);
     log(`Custom Args being sent to SendGrid: `, msg.personalizations[0].custom_args);
+    log('[EmailService] Final message to SendGrid:', JSON.stringify(msg, null, 2)); // Extra debug line
 
     if (!msg.text || msg.text.length === 0) {
         errorLog('Plain text content is still empty before sending! Email not sent.');
