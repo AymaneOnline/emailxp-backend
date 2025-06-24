@@ -65,11 +65,11 @@ exports.verifyWebhookSignature = (req, res, next) => {
         const payloadString = payload.toString();
         const signedPayload = timestamp + payloadString;
         
-        // Create HMAC hash
+        // Create HMAC hash - SendGrid produces a HEX digest
         const expectedSignature = crypto
             .createHmac('sha256', SENDGRID_WEBHOOK_SECRET)
             .update(signedPayload)
-            .digest('base64');
+            .digest('hex'); // <--- CRITICAL CHANGE: Changed from 'base64' to 'hex'
         
         // SendGrid sends signature in format "v1,signature1,signature2"
         // We need to check if our expected signature matches any of the provided signatures
@@ -78,9 +78,13 @@ exports.verifyWebhookSignature = (req, res, next) => {
             const cleanSig = sig.trim();
             // Remove "v1=" prefix if present
             const sigValue = cleanSig.startsWith('v1=') ? cleanSig.substring(3) : cleanSig;
+            
+            logger.log(`[DEBUG - Webhook Verify] Comparing: Expected (hex): ${expectedSignature}, Received (hex): ${sigValue}`);
+            
+            // Convert both to buffers using 'hex' encoding for a byte-by-byte comparison
             return crypto.timingSafeEqual(
-                Buffer.from(expectedSignature),
-                Buffer.from(sigValue)
+                Buffer.from(expectedSignature, 'hex'), // Explicitly convert expected to hex buffer
+                Buffer.from(sigValue, 'hex')         // Explicitly convert received to hex buffer
             );
         });
 
