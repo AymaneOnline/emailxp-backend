@@ -12,7 +12,7 @@ const userRoutes = require('./routes/userRoutes');
 const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
-const trackingRoutes = require('./routes/trackingRoutes');
+const trackingRoutes = require('./routes/trackingRoutes'); // Keep this
 const templateRoutes = require('./routes/templateRoutes');
 
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
@@ -23,14 +23,10 @@ const PORT = process.env.PORT || 5000;
 // Connect to Database
 connectDB();
 
-// --- RAW BODY PARSING FOR SENDGRID WEBHOOK VERIFICATION ---
-// This MUST come BEFORE express.json() and other body parsers
-app.use('/api/track/webhook', express.raw({ 
-  type: 'application/json',
-  limit: '10mb'
-}));
-
-// General Middleware (applied to all other routes)
+// --- General Middleware (applied to all routes) ---
+// Note: We no longer need express.raw specifically for /api/track/webhook
+// since we are not using SendGrid's webhook signature verification anymore.
+// express.json() will be sufficient for general POST requests to other routes.
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false, limit: '10mb' }));
@@ -45,7 +41,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/lists', listRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/lists/:listId/subscribers', subscriberRoutes);
-app.use('/api/track', trackingRoutes);
+app.use('/api/track', trackingRoutes); // This will now handle /api/track/open and /api/track/click
 app.use('/api/templates', templateRoutes);
 
 // Error Handling Middleware

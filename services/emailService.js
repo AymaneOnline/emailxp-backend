@@ -5,10 +5,13 @@ const { convert } = require('html-to-text');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
+// Use the Railway deployment URL as the base for tracking links and pixels
+// This should be set in your Railway environment variables
 const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-backend-production.up.railway.app';
 
 /**
  * @desc Sends an email using SendGrid.
+ * Embeds campaign and subscriber IDs directly into tracking URLs and a pixel.
  */
 const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
     const log = (...args) => console.log(`[EmailService]`, ...args);
@@ -20,14 +23,47 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     let finalHtmlContent = htmlContent;
     let finalPlainTextContent = plainTextContent;
 
+    // --- 1. Process HTML Content for Tracking ---
+    // Inject campaignId and subscriberId into all links (<a> tags) for click tracking
+    if (finalHtmlContent) {
+        log('Injecting tracking parameters into HTML links...');
+        finalHtmlContent = finalHtmlContent.replace(/<a\s+(.*?)href=["']([^"']*)["'](.*?)>/gi, (match, beforeHref, href, afterHref) => {
+            // Ensure href is a valid URL or handle relative paths as needed
+            let newHref = href;
+            const url = new URL(newHref, BACKEND_TRACKING_BASE_URL); // Use base URL for relative paths
+            
+            // Append tracking parameters
+            url.searchParams.set('campaignId', campaignId ? campaignId.toString() : '');
+            url.searchParams.set('subscriberId', subscriberId ? subscriberId.toString() : '');
+
+            // Construct a new URL for the click tracking endpoint
+            // This will redirect to the original URL after logging the click
+            const trackingUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/click?campaignId=${campaignId}&subscriberId=${subscriberId}&redirect=${encodeURIComponent(url.toString())}`;
+
+            return `<a ${beforeHref}href="${trackingUrl}"${afterHref}>`;
+        });
+
+        // Inject a 1x1 tracking pixel for open tracking
+        // This pixel will hit our /api/track/open endpoint
+        const trackingPixel = `<img src="${BACKEND_TRACKING_BASE_URL}/api/track/open?campaignId=${campaignId}&subscriberId=${subscriberId}" width="1" height="1" style="display:none !important; border:0; height:1px; width:1px; margin:0; padding:0;">`;
+        finalHtmlContent = finalHtmlContent + trackingPixel;
+        log('Tracking pixel injected for open tracking.');
+    }
+
+
+    // --- 2. Process Plain Text Content ---
+    // If plain text is empty, try converting HTML
     if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
         log('Plain text content is empty. Attempting to convert HTML to plain text...');
         try {
+            // Use html-to-text to convert, ensuring links are handled if needed (though our HTML links redirect now)
             finalPlainTextContent = convert(finalHtmlContent, {
                 wordwrap: 130,
                 selectors: [
+                    // Skip images including our tracking pixel
                     { selector: 'img', format: 'skip' },
-                    { selector: 'a', options: { ignoreHref: true } }
+                    // Ensure links are formatted correctly in plain text, without exposing redirect details
+                    { selector: 'a', options: { ignoreHref: false, noAnchorUrl: true } } // Keep URL, but not anchor part
                 ]
             });
 
@@ -45,21 +81,24 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         }
     }
 
+    // Construct email message (NO custom_args in the SendGrid payload anymore)
     const msg = {
-        from: process.env.SENDGRID_SENDER_EMAIL,
         to: toEmail,
+        from: process.env.SENDGRID_SENDER_EMAIL,
         subject: subject,
         html: finalHtmlContent,
         text: finalPlainTextContent,
-        custom_args: {
-            campaignId: campaignId ? campaignId.toString() : '',
-            subscriberId: subscriberId ? subscriberId.toString() : ''
-        }
+        // No 'personalizations' array with custom_args here as we are embedding directly
+        // If SendGrid API requires 'personalizations' and 'to', keep it simple:
+        personalizations: [
+            {
+                to: [{ email: toEmail }]
+            }
+        ]
     };
 
-    log(`Message object prepared for SendGrid (to: ${msg.to}, from: ${msg.from}, subject: ${msg.subject})`);
-    log(`Custom Args being sent to SendGrid: `, msg.custom_args);
-    log('[EmailService] Final message to SendGrid:', JSON.stringify(msg, null, 2));
+    log(`Message object prepared for SendGrid (to: ${toEmail}, from: ${msg.from}, subject: ${msg.subject})`);
+    // Removed logging custom_args here as they are no longer part of SendGrid payload
 
     if (!msg.text || msg.text.length === 0) {
         errorLog('Plain text content is still empty before sending! Email not sent.');
