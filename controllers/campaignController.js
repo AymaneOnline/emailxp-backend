@@ -357,14 +357,12 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         lastSentAt: { $gte: sevenDaysAgo }
     }).sort({ lastSentAt: -1 }).limit(5);
 
-    // --- AGGREGATION FOR ALL PERFORMANCE STATS FROM EVENT COLLECTIONS AND CAMPAIGN MODEL ---
+    // --- AGGREGATION FOR PERFORMANCE STATS FROM EVENT COLLECTIONS AND CAMPAIGN MODEL ---
     const sentCampaignIdsByUser = await Campaign.find({ user: userId, status: 'sent' }).select('_id');
     const sentCampaignObjectIds = sentCampaignIdsByUser.map(campaign => new mongoose.Types.ObjectId(campaign._id));
 
     let totalEmailsSent = 0;
-    let totalBounced = 0;
-    let totalUnsubscribed = 0;
-    let totalComplaints = 0; // Placeholder for now
+    let totalUnsubscribed = 0; // Keep unsubscribed as it's manually tracked
 
     if (sentCampaignObjectIds.length > 0) {
         const overallCampaignPerformance = await Campaign.aggregate([
@@ -373,27 +371,21 @@ const getDashboardStats = asyncHandler(async (req, res) => {
                 $group: {
                     _id: null,
                     sumEmailsSent: { $sum: '$emailsSent' },
-                    sumBounced: { $sum: '$bouncedCount' },
                     sumUnsubscribed: { $sum: '$unsubscribedCount' },
-                    sumComplaints: { $sum: '$complaintCount' }
                 }
             },
             {
                 $project: {
                     _id: 0,
                     totalEmailsSent: '$sumEmailsSent',
-                    totalBounced: '$sumBounced',
                     totalUnsubscribed: '$sumUnsubscribed',
-                    totalComplaints: '$sumComplaints'
                 }
             }
         ]);
 
         if (overallCampaignPerformance.length > 0) {
             totalEmailsSent = overallCampaignPerformance[0].totalEmailsSent || 0;
-            totalBounced = overallCampaignPerformance[0].totalBounced || 0;
             totalUnsubscribed = overallCampaignPerformance[0].totalUnsubscribed || 0;
-            totalComplaints = overallCampaignPerformance[0].totalComplaints || 0;
         }
     }
 
@@ -455,14 +447,13 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             uniqueOpens: uniqueOpens,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicks,
-            totalBounced: totalBounced,
-            totalUnsubscribed: totalUnsubscribed,
-            totalComplaints: totalComplaints,
+            totalUnsubscribed: totalUnsubscribed, // Keep this one
             openRate: parseFloat(openRate.toFixed(2)),
             clickRate: parseFloat(clickRate.toFixed(2))
         }
     });
 });
+
 
 // @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
 // @route   GET /api/campaigns/:id/analytics
@@ -523,9 +514,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
             uniqueOpens: uniqueOpensCount,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicksCount,
-            bounced: campaign.bouncedCount || 0,
+            bounced: campaign.bouncedCount || 0, // Keep this on campaign analytics for consistency if you decide to implement it later
             unsubscribed: campaign.unsubscribedCount || 0,
-            complaints: campaign.complaintCount || 0,
+            complaints: campaign.complaintCount || 0, // Keep this on campaign analytics for consistency if you decide to implement it later
             status: campaign.status,
             lastSentAt: campaign.lastSentAt,
             openRate: openRate,
@@ -599,7 +590,7 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
                         $cond: {
                             if: { $eq: [period, 'weekly'] },
                             then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
-                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } // YYYY-MM-DD
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } //YYYY-MM-DD
                         }
                     },
                     count: 1
@@ -626,7 +617,7 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
                         $cond: {
                             if: { $eq: [period, 'weekly'] },
                             then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
-                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } // YYYY-MM-DD
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } //YYYY-MM-DD
                         }
                     },
                     count: 1
