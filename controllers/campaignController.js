@@ -238,7 +238,7 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     campaign.status = 'sending';
     campaign.lastSentAt = new Date();
     campaign.totalRecipients = subscribers.length;
-    await campaign.save();
+    await campaign.save(); // Save initial 'sending' status
 
     let successfulSends = 0;
     let failedSends = 0;
@@ -263,7 +263,6 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                 campaign.list._id
             );
 
-            // Log send status for debugging
             if (result.success) {
                 console.log(`[SendCampaign] Email to ${subscriber.email} SUCCESS.`);
             } else {
@@ -291,8 +290,16 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
 
         campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        campaign.emailsSent = successfulSends; // This is crucial for dashboard counts
-        await campaign.save();
+        campaign.emailsSent = successfulSends;
+
+        try {
+            await campaign.save(); // Final save with actual sent count and status
+            console.log(`[CampaignController] Campaign ${campaign._id} final status updated to ${campaign.status}, emailsSent: ${campaign.emailsSent}`);
+        } catch (saveError) {
+            console.error(`[CampaignController] CRITICAL ERROR: Failed to save final campaign status and emailsSent for ${campaign._id}:`, saveError);
+            // Even if this save fails, we should still respond to the user if previous operations were successful
+        }
+
 
         res.status(200).json({
             message: 'Campaign sending initiated. Check logs for details.',
@@ -302,12 +309,20 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[CampaignController] Error sending campaign:', error.response?.body || error.message);
-        campaign.status = 'failed';
-        await campaign.save();
+        console.error('[CampaignController] Error during campaign sending process:', error.response?.body || error.message || error);
+        // Attempt to mark campaign as failed if an error occurs earlier in the sending process
+        if (campaign.status === 'sending') { // Only if still in 'sending' state
+            campaign.status = 'failed';
+            try {
+                await campaign.save();
+                console.log(`[CampaignController] Campaign ${campaign._id} status set to 'failed' due to error.`);
+            } catch (failSaveError) {
+                console.error(`[CampaignController] Failed to save 'failed' status for campaign ${campaign._id}:`, failSaveError);
+            }
+        }
         res.status(500).json({
             message: 'Failed to send campaign.',
-            error: error.response?.body || error.message,
+            error: error.response?.body || error.message || error,
         });
     }
 });
@@ -362,7 +377,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const sentCampaignObjectIds = sentCampaignIdsByUser.map(campaign => new mongoose.Types.ObjectId(campaign._id));
 
     let totalEmailsSent = 0;
-    let totalUnsubscribed = 0; // Keep unsubscribed as it's manually tracked
+    let totalUnsubscribed = 0;
 
     if (sentCampaignObjectIds.length > 0) {
         const overallCampaignPerformance = await Campaign.aggregate([
@@ -447,7 +462,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             uniqueOpens: uniqueOpens,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicks,
-            totalUnsubscribed: totalUnsubscribed, // Keep this one
+            totalUnsubscribed: totalUnsubscribed,
             openRate: parseFloat(openRate.toFixed(2)),
             clickRate: parseFloat(clickRate.toFixed(2))
         }
@@ -514,9 +529,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
             uniqueOpens: uniqueOpensCount,
             totalClicks: totalClicks,
             uniqueClicks: uniqueClicksCount,
-            bounced: campaign.bouncedCount || 0, // Keep this on campaign analytics for consistency if you decide to implement it later
+            bounced: campaign.bouncedCount || 0,
             unsubscribed: campaign.unsubscribedCount || 0,
-            complaints: campaign.complaintCount || 0, // Keep this on campaign analytics for consistency if you decide to implement it later
+            complaints: campaign.complaintCount || 0,
             status: campaign.status,
             lastSentAt: campaign.lastSentAt,
             openRate: openRate,
@@ -651,7 +666,7 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
         // Convert to array and sort by date again to ensure correct order
         const timeSeries = Object.values(combinedData).sort((a, b) => {
             if (period === 'weekly') {
-                // Custom sort for YYYY-WVV format
+                // Custom sort for ISO week date format (YYYY-WVV)
                 const [yearA, weekA] = a.date.split('-W').map(Number);
                 const [yearB, weekB] = b.date.split('-W').map(Number);
                 if (yearA !== yearB) return yearA - yearB;
