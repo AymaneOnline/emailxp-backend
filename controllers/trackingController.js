@@ -4,14 +4,12 @@ const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
 const logger = require('../utils/logger');
 
-// ✅ CORRECT IMPORTS FOR SIGNATURE VERIFICATION
-const { EventWebhook, convertPublicKeyToPEM } = require('@sendgrid/eventwebhook');
+const { EventWebhook } = require('@sendgrid/eventwebhook');
 
-// ✅ Load SendGrid public key from environment
 const SENDGRID_WEBHOOK_SECRET = process.env.SENDGRID_WEBHOOK_SECRET;
 
 /**
- * @desc Middleware to verify SendGrid webhook signatures.
+ * @desc Middleware to verify SendGrid webhook signatures
  */
 exports.verifyWebhookSignature = (req, res, next) => {
     const signature = req.headers['x-twilio-email-event-webhook-signature'];
@@ -25,36 +23,33 @@ exports.verifyWebhookSignature = (req, res, next) => {
     logger.log(`[DEBUG - Webhook Verify] SENDGRID_WEBHOOK_SECRET set: ${!!SENDGRID_WEBHOOK_SECRET}`);
 
     if (!SENDGRID_WEBHOOK_SECRET) {
-        logger.warn('[Webhook] SENDGRID_WEBHOOK_SECRET is not set. Skipping verification.');
+        logger.warn('[Webhook] No webhook secret configured — skipping verification');
         return next();
     }
 
     if (!signature || !timestamp || !payload) {
-        logger.error('[Webhook Verification] Missing required data.');
-        return res.status(401).send('Unauthorized: Missing required webhook data');
+        logger.error('[Webhook Verification] Missing required signature headers or body');
+        return res.status(401).send('Unauthorized: Missing required data');
     }
 
     try {
-        const webhook = new EventWebhook();
-        const publicKey = convertPublicKeyToPEM(SENDGRID_WEBHOOK_SECRET);
-
-        const isVerified = webhook.verifySignature(
-            publicKey,
+        const webhook = new EventWebhook(SENDGRID_WEBHOOK_SECRET);
+        const isVerified = webhook.verifySignature({
             payload,
             signature,
             timestamp
-        );
+        });
 
         if (isVerified) {
-            logger.log('[Webhook Verification] Signature verified successfully.');
+            logger.log('[Webhook Verification] Signature verified successfully');
             next();
         } else {
-            logger.error('[Webhook Verification] Invalid signature.');
+            logger.error('[Webhook Verification] Signature invalid');
             res.status(401).send('Unauthorized: Invalid signature');
         }
-    } catch (error) {
-        logger.error('[Webhook Verification Error]', error);
-        res.status(200).send('Webhook received with internal verification error.');
+    } catch (err) {
+        logger.error('[Webhook Verification Error]', err);
+        res.status(200).send('Webhook received with internal verification error');
     }
 };
 
@@ -70,30 +65,30 @@ exports.handleWebhook = async (req, res) => {
         const { campaignId, subscriberId, listId } = event.custom_args || {};
 
         if (!campaignId || !subscriberId || !listId) {
-            logger.warn(`[Webhook] Missing custom_args for event type ${event.event}. Campaign ID: ${campaignId}, Subscriber ID: ${subscriberId}, List ID: ${listId}. Skipping processing for this event.`);
+            logger.warn(`[Webhook] Missing custom_args for event type ${event.event}. Skipping.`);
             continue;
         }
 
         try {
             const subscriber = await Subscriber.findById(subscriberId);
             if (!subscriber) {
-                logger.warn(`[Webhook] Subscriber with ID ${subscriberId} not found for list ${listId}. Skipping event.`);
+                logger.warn(`[Webhook] Subscriber with ID ${subscriberId} not found`);
                 continue;
             }
 
             const campaign = await Campaign.findById(campaignId);
             if (!campaign) {
-                logger.warn(`[Webhook] Campaign with ID ${campaignId} not found for subscriber ${subscriberId}. Skipping event.`);
+                logger.warn(`[Webhook] Campaign with ID ${campaignId} not found`);
                 continue;
             }
 
             switch (event.event) {
                 case 'open':
-                    logger.log(`[Webhook] Email opened by ${event.email} for Campaign ${campaignId}`);
+                    logger.log(`[Webhook] Email opened by ${event.email}`);
                     await Campaign.findByIdAndUpdate(campaignId, { $inc: { opens: 1 } });
                     break;
                 case 'click':
-                    logger.log(`[Webhook] Link clicked by ${event.email} for Campaign ${campaignId}, URL: ${event.url}`);
+                    logger.log(`[Webhook] Link clicked by ${event.email}, URL: ${event.url}`);
                     await Campaign.findByIdAndUpdate(campaignId, { $inc: { clicks: 1 } });
                     break;
                 case 'bounce':
@@ -120,7 +115,7 @@ exports.handleWebhook = async (req, res) => {
                     logger.log(`[Webhook] Email processed by SendGrid for ${event.email}`);
                     break;
                 default:
-                    logger.log(`[Webhook] Unhandled event type: ${event.event} for ${event.email}`);
+                    logger.log(`[Webhook] Unhandled event type: ${event.event}`);
             }
 
         } catch (error) {
@@ -132,7 +127,7 @@ exports.handleWebhook = async (req, res) => {
 };
 
 /**
- * @desc Handle direct unsubscribe link clicks.
+ * @desc Handle unsubscribe link clicks
  */
 exports.unsubscribe = async (req, res) => {
     const { subscriberId } = req.params;
@@ -144,27 +139,27 @@ exports.unsubscribe = async (req, res) => {
         const subscriber = await Subscriber.findById(subscriberId);
 
         if (!subscriber) {
-            logger.warn(`[Unsubscribe] Subscriber with ID ${subscriberId} not found.`);
-            return res.status(404).send('Subscriber not found.');
+            logger.warn(`[Unsubscribe] Subscriber with ID ${subscriberId} not found`);
+            return res.status(404).send('Subscriber not found');
         }
 
         if (subscriber.status === 'unsubscribed') {
-            logger.log(`[Unsubscribe] Subscriber ${subscriberId} is already unsubscribed.`);
-            return res.status(200).send('You have already unsubscribed from this list.');
+            logger.log(`[Unsubscribe] Subscriber ${subscriberId} already unsubscribed`);
+            return res.status(200).send('You have already unsubscribed');
         }
 
         subscriber.status = 'unsubscribed';
         await subscriber.save();
-        logger.log(`[Unsubscribe] Subscriber ${subscriberId} successfully unsubscribed.`);
+        logger.log(`[Unsubscribe] Subscriber ${subscriberId} successfully unsubscribed`);
 
         if (campaignId) {
             await Campaign.findByIdAndUpdate(campaignId, { $inc: { unsubscribedCount: 1 } });
-            logger.log(`[Unsubscribe] Campaign ${campaignId} unsubscribed count incremented.`);
+            logger.log(`[Unsubscribe] Campaign ${campaignId} unsubscribed count incremented`);
         }
 
-        res.status(200).send('You have successfully unsubscribed.');
+        res.status(200).send('You have successfully unsubscribed');
     } catch (error) {
         logger.error(`[Unsubscribe Error] Failed to unsubscribe subscriber ${subscriberId}:`, error);
-        res.status(500).send('An error occurred during unsubscribe.');
+        res.status(500).send('An error occurred during unsubscribe');
     }
 };
