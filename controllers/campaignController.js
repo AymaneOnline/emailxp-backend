@@ -11,9 +11,9 @@ const mongoose = require('mongoose');
 
 const { sendEmail } = require('../services/emailService');
 
-// @desc    Get all campaigns for the authenticated user
-// @route   GET /api/campaigns
-// @access  Private
+// @desc    Get all campaigns for the authenticated user
+// @route   GET /api/campaigns
+// @access  Private
 const getCampaigns = asyncHandler(async (req, res) => {
     const campaigns = await Campaign.find({ user: req.user.id })
         .populate('list', 'name')
@@ -21,9 +21,9 @@ const getCampaigns = asyncHandler(async (req, res) => {
     res.status(200).json(campaigns);
 });
 
-// @desc    Create a new campaign
-// @route   POST /api/campaigns
-// @access  Private
+// @desc    Create a new campaign
+// @route   POST /api/campaigns
+// @access  Private
 const createCampaign = asyncHandler(async (req, res) => {
     const { name, subject, htmlContent, plainTextContent, list: listId, status, scheduledAt, templateId } = req.body;
 
@@ -79,9 +79,9 @@ const createCampaign = asyncHandler(async (req, res) => {
     res.status(201).json(campaign);
 });
 
-// @desc    Get a single campaign by ID for the authenticated user
-// @route   GET /api/campaigns/:id
-// @access  Private
+// @desc    Get a single campaign by ID for the authenticated user
+// @route   GET /api/campaigns/:id
+// @access  Private
 const getCampaignById = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id)
         .populate('list', 'name')
@@ -100,9 +100,9 @@ const getCampaignById = asyncHandler(async (req, res) => {
     res.status(200).json(campaign);
 });
 
-// @desc    Update a campaign
-// @route   PUT /api/campaigns/:id
-// @access  Private
+// @desc    Update a campaign
+// @route   PUT /api/campaigns/:id
+// @access  Private
 const updateCampaign = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id);
 
@@ -178,9 +178,9 @@ const updateCampaign = asyncHandler(async (req, res) => {
     res.status(200).json(updatedCampaign);
 });
 
-// @desc    Delete a campaign
-// @route   DELETE /api/campaigns/:id
-// @access  Private
+// @desc    Delete a campaign
+// @route   DELETE /api/campaigns/:id
+// @access  Private
 const deleteCampaign = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id);
 
@@ -199,10 +199,11 @@ const deleteCampaign = asyncHandler(async (req, res) => {
     res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
 });
 
-// @desc    Manually send a campaign to its associated list subscribers immediately
-// @route   POST /api/campaigns/:id/send
-// @access  Private
-const sendCampaignManually = asyncHandler(async (req, res) => {
+// @desc    Manually send a campaign to its associated list subscribers immediately
+// @route   POST /api/campaigns/:id/send
+// @access  Private
+// RENAMED: from sendCampaignManually to sendCampaign
+const sendCampaign = asyncHandler(async (req, res) => { // RENAMED FUNCTION
     const campaignId = req.params.id;
 
     const campaign = await Campaign.findById(campaignId).populate('list');
@@ -236,10 +237,10 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     }
 
     campaign.status = 'sending';
-    campaign.lastSentAt = new Date(); // Update lastSentAt on initial status change to 'sending'
+    campaign.lastSentAt = new Date();
     campaign.totalRecipients = subscribers.length;
-    await campaign.save(); // Save initial 'sending' status
-    console.log(`[SendCampaignManually] Campaign ${campaign._id} initiated send, status: 'sending', totalRecipients: ${campaign.totalRecipients}`);
+    await campaign.save();
+    console.log(`[SendCampaign] Campaign ${campaign._id} initiated send, status: 'sending', totalRecipients: ${campaign.totalRecipients}`);
 
     let successfulSends = 0;
     let failedSends = 0;
@@ -276,26 +277,25 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                     failedSends++;
                     const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
                     const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
-                    console.error(`[SendCampaignManually] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                    console.error(`[SendCampaign] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
                 }
             } else if (outcome.status === 'rejected') {
                 failedSends++;
-                console.error(`[SendCampaignManually] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
+                console.error(`[SendCampaign] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
             }
         });
 
-        console.log(`[SendCampaignManually] After all emails processed: successfulSends = ${successfulSends}, failedSends = ${failedSends}`);
+        console.log(`[SendCampaign] After all emails processed: successfulSends = ${successfulSends}, failedSends = ${failedSends}`);
 
         campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        // CRITICAL FIX: Use 'emailsSuccessfullySent' as defined in your Campaign model
         campaign.emailsSuccessfullySent = successfulSends;
-        campaign.sentAt = new Date(); // Update sentAt to the actual completion time
+        campaign.sentAt = new Date();
 
         try {
-            await campaign.save(); // Final save with actual sent count and status
-            console.log(`[SendCampaignManually] Campaign ${campaign._id} final status updated to ${campaign.status}, emailsSuccessfullySent: ${campaign.emailsSuccessfullySent}, sentAt: ${campaign.sentAt}`);
+            await campaign.save();
+            console.log(`[SendCampaign] Campaign ${campaign._id} final status updated to ${campaign.status}, emailsSuccessfullySent: ${campaign.emailsSuccessfullySent}, sentAt: ${campaign.sentAt}`);
         } catch (saveError) {
-            console.error(`[SendCampaignManually] CRITICAL ERROR: Failed to save final campaign status and emailsSuccessfullySent for ${campaign._id}:`, saveError);
+            console.error(`[SendCampaign] CRITICAL ERROR: Failed to save final campaign status and emailsSuccessfullySent for ${campaign._id}:`, saveError);
         }
 
         res.status(200).json({
@@ -306,14 +306,14 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[SendCampaignManually] Error during campaign sending process (outer catch):', error.response?.body || error.message || error);
+        console.error('[SendCampaign] Error during campaign sending process (outer catch):', error.response?.body || error.message || error);
         if (campaign.status === 'sending') {
             campaign.status = 'failed';
             try {
                 await campaign.save();
-                console.log(`[SendCampaignManually] Campaign ${campaign._id} status set to 'failed' due to outer error.`);
+                console.log(`[SendCampaign] Campaign ${campaign._id} status set to 'failed' due to outer error.`);
             } catch (failSaveError) {
-                console.error(`[SendCampaignManually] Failed to save 'failed' status for campaign ${campaign._id} in outer catch:`, failSaveError);
+                console.error(`[SendCampaign] Failed to save 'failed' status for campaign ${campaign._id} in outer catch:`, failSaveError);
             }
         }
         res.status(500).json({
@@ -323,21 +323,17 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Get aggregate dashboard statistics for the authenticated user
-// @route   GET /api/campaigns/dashboard-stats
-// @access  Private
+// @desc    Get aggregate dashboard statistics for the authenticated user
+// @route   GET /api/campaigns/dashboard-stats
+// @access  Private
 const getDashboardStats = asyncHandler(async (req, res) => {
     const userId = req.user.id;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Total Campaigns owned by the user
     const totalCampaigns = await Campaign.countDocuments({ user: userId });
-
-    // Total Lists owned by the user
     const totalLists = await List.countDocuments({ user: userId });
 
-    // Total Subscribers for lists owned by the user
     const totalSubscribersAggregate = await List.aggregate([
         { $match: { user: new mongoose.Types.ObjectId(userId) } },
         {
@@ -355,10 +351,8 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     ]);
     const totalSubscribers = totalSubscribersAggregate.length > 0 ? totalSubscribersAggregate[0].total : 0;
 
-    // Campaigns Sent count for the user
     const campaignsSent = await Campaign.countDocuments({ user: userId, status: 'sent' });
 
-    // Recent Campaigns (last 7 days)
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setDate(today.getDate() - 7);
     const recentCampaigns = await Campaign.find({
@@ -366,7 +360,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         lastSentAt: { $gte: sevenDaysAgo }
     }).sort({ lastSentAt: -1 }).limit(5);
 
-    // --- AGGREGATION FOR PERFORMANCE STATS FROM EVENT COLLECTIONS AND CAMPAIGN MODEL ---
     const sentCampaignIdsByUser = await Campaign.find({ user: userId, status: 'sent' }).select('_id');
     const sentCampaignObjectIds = sentCampaignIdsByUser.map(campaign => new mongoose.Types.ObjectId(campaign._id));
 
@@ -379,7 +372,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             {
                 $group: {
                     _id: null,
-                    // FIX: Sum 'emailsSuccessfullySent' as per the model
                     sumEmailsSent: { $sum: '$emailsSuccessfullySent' },
                     sumUnsubscribed: { $sum: '$unsubscribedCount' },
                 }
@@ -399,7 +391,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         }
     }
 
-    // Aggregate total and unique opens from OpenEvent collection for user's sent campaigns
     const opensStats = await OpenEvent.aggregate([
         { $match: { campaign: { $in: sentCampaignObjectIds } } },
         {
@@ -420,7 +411,6 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const totalOpens = opensStats.length > 0 ? opensStats[0].total : 0;
     const uniqueOpens = opensStats.length > 0 ? opensStats[0].unique : 0;
 
-    // Aggregate total and unique clicks from ClickEvent collection for user's sent campaigns
     const clicksStats = await ClickEvent.aggregate([
         { $match: { campaign: { $in: sentCampaignObjectIds } } },
         {
@@ -465,9 +455,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
-// @route   GET /api/campaigns/:id/analytics
-// @access  Private
+// @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
+// @route   GET /api/campaigns/:id/analytics
+// @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
     const { id: campaignId } = req.params;
 
@@ -489,10 +479,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Calculate Total Opens
         const totalOpens = await OpenEvent.countDocuments({ campaign: campaignId });
-
-        // Calculate Unique Opens
         const uniqueOpens = await OpenEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
             { $group: { _id: '$subscriber' } },
@@ -500,10 +487,7 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         ]);
         const uniqueOpensCount = uniqueOpens.length > 0 ? uniqueOpens[0].uniqueCount : 0;
 
-        // Calculate Total Clicks
         const totalClicks = await ClickEvent.countDocuments({ campaign: campaignId });
-
-        // Calculate Unique Clicks
         const uniqueClicks = await ClickEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
             { $group: { _id: '$subscriber' } },
@@ -511,7 +495,6 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         ]);
         const uniqueClicksCount = uniqueClicks.length > 0 ? uniqueClicks[0].uniqueCount : 0;
 
-        // FIX: Use 'emailsSuccessfullySent' from campaign model
         const emailsSent = campaign.emailsSuccessfullySent || 0;
         const openRate = emailsSent > 0 ? (uniqueOpensCount / emailsSent * 100) : 0;
         const clickRate = emailsSent > 0 ? (uniqueClicksCount / emailsSent * 100) : 0;
@@ -530,8 +513,8 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
             complaints: campaign.complaintCount || 0,
             status: campaign.status,
             lastSentAt: campaign.lastSentAt,
-            openRate: openRate,
-            clickRate: clickRate
+            openRate: parseFloat(openRate.toFixed(2)),
+            clickRate: parseFloat(clickRate.toFixed(2))
         });
 
     } catch (error) {
@@ -541,9 +524,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Get time-series analytics (daily/weekly opens and clicks) for a specific campaign
-// @route   GET /api/campaigns/:id/analytics/time-series?period=daily || weekly
-// @access  Private
+// @desc    Get time-series analytics (daily/weekly opens and clicks) for a specific campaign
+// @route   GET /api/campaigns/:id/analytics/time-series?period=daily || weekly
+// @access  Private
 const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
     const { id: campaignId } = req.params;
     const { period = 'daily' } = req.query; // Default to daily, can be 'weekly'
@@ -568,13 +551,11 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
     try {
         let groupByFormat;
         if (period === 'weekly') {
-            // Group by year and week number
             groupByFormat = {
                 year: { $year: '$timestamp' },
                 week: { $week: '$timestamp' }
             };
-        } else { // default to daily
-            // Group by year, month, day
+        } else {
             groupByFormat = {
                 year: { $year: '$timestamp' },
                 month: { $month: '$timestamp' },
@@ -582,26 +563,24 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
             };
         }
 
-        // Aggregate Open Events
         const opensTimeSeries = await OpenEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
             {
                 $group: {
                     _id: groupByFormat,
                     count: { $sum: 1 },
-                    // Get the first timestamp for sorting and date reconstruction
                     firstTimestamp: { $min: '$timestamp' }
                 }
             },
-            { $sort: { 'firstTimestamp': 1 } }, // Sort by date
+            { $sort: { 'firstTimestamp': 1 } },
             {
                 $project: {
                     _id: 0,
                     date: {
                         $cond: {
                             if: { $eq: [period, 'weekly'] },
-                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
-                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } //YYYY-MM-DD
+                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } },
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } }
                         }
                     },
                     count: 1
@@ -609,26 +588,24 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
             }
         ]);
 
-        // Aggregate Click Events
         const clicksTimeSeries = await ClickEvent.aggregate([
             { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
             {
                 $group: {
                     _id: groupByFormat,
                     count: { $sum: 1 },
-                     // Get the first timestamp for sorting and date reconstruction
                     firstTimestamp: { $min: '$timestamp' }
                 }
             },
-            { $sort: { 'firstTimestamp': 1 } }, // Sort by date
+            { $sort: { 'firstTimestamp': 1 } },
             {
                 $project: {
                     _id: 0,
                     date: {
                         $cond: {
                             if: { $eq: [period, 'weekly'] },
-                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } }, // ISO week date format
-                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } } //YYYY-MM-DD
+                            then: { $dateToString: { format: '%Y-W%V', date: '$firstTimestamp' } },
+                            else: { $dateToString: { format: '%Y-%m-%d', date: '$firstTimestamp' } }
                         }
                     },
                     count: 1
@@ -636,7 +613,6 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
             }
         ]);
 
-        // Combine opens and clicks into a single time-series array
         const combinedData = {};
 
         opensTimeSeries.forEach(item => {
@@ -659,20 +635,16 @@ const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
             }
         });
 
-        // Convert to array and sort by date again to ensure correct order
         const timeSeries = Object.values(combinedData).sort((a, b) => {
             if (period === 'weekly') {
-                // Custom sort for ISO week date format (YYYY-WVV)
                 const [yearA, weekA] = a.date.split('-W').map(Number);
                 const [yearB, weekB] = b.date.split('-W').map(Number);
                 if (yearA !== yearB) return yearA - yearB;
                 return weekA - weekB;
             } else {
-                // Standard date string comparison
                 return new Date(a.date) - new Date(b.date);
             }
         });
-
 
         res.status(200).json(timeSeries);
 
@@ -689,7 +661,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign: sendCampaignManually,
+    sendCampaign, // Changed from sendCampaignManually
     getDashboardStats,
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries,
