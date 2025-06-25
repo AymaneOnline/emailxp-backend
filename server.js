@@ -1,60 +1,46 @@
 // emailxp/backend/server.js
 
-require('dotenv').config();
-
-// --- DEBUG LOG TO CHECK WEBHOOK SECRET ---
-console.log(`[DEBUG - Env Check] SENDGRID_WEBHOOK_SECRET from process.env: "${process.env.SENDGRID_WEBHOOK_SECRET}"`);
-
 const express = require('express');
+const dotenv = require('dotenv').config();
 const cors = require('cors');
+const { errorHandler } = require('./middleware/errorMiddleware');
 const connectDB = require('./config/db');
+require('./config/cloudinary'); // NEW: Initialize Cloudinary
+
+// Import routes
 const userRoutes = require('./routes/userRoutes');
-const listRoutes = require('./routes/listRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
+const listRoutes = require('./routes/listRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
-const trackingRoutes = require('./routes/trackingRoutes'); // Keep this
 const templateRoutes = require('./routes/templateRoutes');
+const trackingRoutes = require('./routes/trackingRoutes');
+const uploadRoutes = require('./routes/uploadRoutes'); // NEW: Import upload routes
 
-const { startCampaignScheduler } = require('./utils/campaignScheduler');
-
-const app = express();
-const PORT = process.env.PORT || 5000;
-
-// Connect to Database
 connectDB();
 
-// --- General Middleware (applied to all routes) ---
-// Note: We no longer need express.raw specifically for /api/track/webhook
-// since we are not using SendGrid's webhook signature verification anymore.
-// express.json() will be sufficient for general POST requests to other routes.
+const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-// Basic Route
-app.get('/', (req, res) => {
-  res.send('Email Marketing App Backend is running!');
-});
-
-// Use Routes
+// Define API routes
 app.use('/api/users', userRoutes);
-app.use('/api/lists', listRoutes);
 app.use('/api/campaigns', campaignRoutes);
-app.use('/api/lists/:listId/subscribers', subscriberRoutes);
-app.use('/api/track', trackingRoutes); // This will now handle /api/track/open and /api/track/click
+app.use('/api/lists', listRoutes);
+app.use('/api/subscribers', subscriberRoutes);
 app.use('/api/templates', templateRoutes);
+app.use('/api/track', trackingRoutes);
+app.use('/api/upload', uploadRoutes); // NEW: Use upload routes
 
-// Error Handling Middleware
-app.use((err, req, res, next) => {
-  const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-  res.status(statusCode).json({
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
-  });
-});
+// Serve frontend (if applicable, for Railway this is usually separate)
+if (process.env.NODE_ENV === 'production') {
+    // You'll need to configure your production static file serving if applicable
+    // For Railway, this is usually handled by splitting frontend/backend services.
+} else {
+    app.get('/', (req, res) => res.status(200).json({ message: 'Welcome to the EmailXP Backend API' }));
+}
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  startCampaignScheduler();
-});
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
