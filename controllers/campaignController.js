@@ -202,8 +202,7 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 // @desc    Manually send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
-// RENAMED: from sendCampaignManually to sendCampaign
-const sendCampaign = asyncHandler(async (req, res) => { // RENAMED FUNCTION
+const sendCampaign = asyncHandler(async (req, res) => { // NOTE: Function name is now consistently 'sendCampaign'
     const campaignId = req.params.id;
 
     const campaign = await Campaign.findById(campaignId).populate('list');
@@ -661,7 +660,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign, // Changed from sendCampaignManually
+    sendCampaign, // Correctly exported by name
     getDashboardStats,
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries,

@@ -9,10 +9,10 @@ const {
     updateCampaign,
     deleteCampaign,
     sendTestEmail,
-    sendCampaign, // NOW CORRECTLY IMPORTS 'sendCampaign'
+    sendCampaign, // This is now correctly imported by its name
     getDashboardStats,
     getCampaignAnalytics,
-    getCampaignAnalyticsTimeSeries // NEW: Import the new controller function
+    getCampaignAnalyticsTimeSeries
 } = require('../controllers/campaignController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -29,13 +29,11 @@ router.route('/:id')
     .delete(deleteCampaign);
 
 router.post('/:id/send-test', sendTestEmail);
-router.post('/:id/send', sendCampaign); // Uses the correctly imported 'sendCampaign'
+router.post('/:id/send', sendCampaign); // Now 'sendCampaign' is correctly imported and passed as a function
 
 router.get('/dashboard-stats', getDashboardStats);
 
-// Route for campaign-specific analytics
 router.get('/:id/analytics', getCampaignAnalytics);
-// Route for time-series analytics
-router.get('/:id/analytics/time-series', getCampaignAnalyticsTimeSeries); // Use :id for campaign ID
+router.get('/:id/analytics/time-series', getCampaignAnalyticsTimeSeries);
 
 module.exports = router;
