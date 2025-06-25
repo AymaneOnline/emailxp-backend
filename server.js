@@ -5,16 +5,15 @@ const dotenv = require('dotenv').config();
 const cors = require('cors');
 const { errorHandler } = require('./middleware/errorMiddleware');
 const connectDB = require('./config/db');
-require('./config/cloudinary'); // NEW: Initialize Cloudinary
+require('./config/cloudinary');
 
-// Import routes
 const userRoutes = require('./routes/userRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const listRoutes = require('./routes/listRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
 const templateRoutes = require('./routes/templateRoutes');
 const trackingRoutes = require('./routes/trackingRoutes');
-const uploadRoutes = require('./routes/uploadRoutes'); // NEW: Import upload routes
+const uploadRoutes = require('./routes/uploadRoutes');
 
 connectDB();
 
@@ -30,13 +29,18 @@ app.use('/api/lists', listRoutes);
 app.use('/api/subscribers', subscriberRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/track', trackingRoutes);
-app.use('/api/upload', uploadRoutes); // NEW: Use upload routes
+app.use('/api/upload', uploadRoutes);
+
+// NEW: Simple status endpoint for frontend checks
+app.get('/api/status', (req, res) => {
+    res.status(200).json({ message: 'Backend API is running!' });
+});
 
 // Serve frontend (if applicable, for Railway this is usually separate)
 if (process.env.NODE_ENV === 'production') {
-    // You'll need to configure your production static file serving if applicable
-    // For Railway, this is usually handled by splitting frontend/backend services.
+    // ...
 } else {
+    // This is only for local dev if you run backend on root
     app.get('/', (req, res) => res.status(200).json({ message: 'Welcome to the EmailXP Backend API' }));
 }
 
