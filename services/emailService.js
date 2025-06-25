@@ -13,12 +13,12 @@ const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-ba
  * @desc Sends an email using SendGrid.
  * Embeds campaign and subscriber IDs directly into tracking URLs and a pixel.
  */
-const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId) => {
+const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId, listId) => { // Added listId parameter
     const log = (...args) => console.log(`[EmailService]`, ...args);
     const errorLog = (...args) => console.error(`[EmailService]`, ...args);
     const warnLog = (...args) => console.warn(`[EmailService]`, ...args);
 
-    log(`Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}`);
+    log(`Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}, Subscriber: ${subscriberId}, List: ${listId}`);
 
     let finalHtmlContent = htmlContent;
     let finalPlainTextContent = plainTextContent;
@@ -31,7 +31,7 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
             // Ensure href is a valid URL or handle relative paths as needed
             let newHref = href;
             const url = new URL(newHref, BACKEND_TRACKING_BASE_URL); // Use base URL for relative paths
-            
+
             // Append tracking parameters
             url.searchParams.set('campaignId', campaignId ? campaignId.toString() : '');
             url.searchParams.set('subscriberId', subscriberId ? subscriberId.toString() : '');
@@ -88,8 +88,6 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
         subject: subject,
         html: finalHtmlContent,
         text: finalPlainTextContent,
-        // No 'personalizations' array with custom_args here as we are embedding directly
-        // If SendGrid API requires 'personalizations' and 'to', keep it simple:
         personalizations: [
             {
                 to: [{ email: toEmail }]
@@ -98,7 +96,6 @@ const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campai
     };
 
     log(`Message object prepared for SendGrid (to: ${toEmail}, from: ${msg.from}, subject: ${msg.subject})`);
-    // Removed logging custom_args here as they are no longer part of SendGrid payload
 
     if (!msg.text || msg.text.length === 0) {
         errorLog('Plain text content is still empty before sending! Email not sent.');

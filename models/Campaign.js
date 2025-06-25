@@ -43,15 +43,15 @@ const campaignSchema = mongoose.Schema(
         },
         sentAt: {
             type: Date,
-            default: null,
+            default: null, // This will be updated by sendCampaignManually
         },
         template: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Template',
             default: null,
         },
-        // --- NEW FIELD: To store the count of successfully sent emails for a campaign ---
-        emailsSuccessfullySent: { // This field seems to be redundant with emailsSent in campaignController
+        // --- CORRECT FIELD NAME: To store the count of successfully sent emails for a campaign ---
+        emailsSuccessfullySent: {
             type: Number,
             default: 0,
         },
@@ -86,9 +86,5 @@ const campaignSchema = mongoose.Schema(
         timestamps: true,
     }
 );
-
-// REMOVED: The pre('deleteOne') hook for OpenEvent and ClickEvent
-// because these models do not exist and their counts are stored directly on the Campaign model.
-// When a Campaign is deleted, its fields (including opens, clicks, etc.) are also deleted.
 
 module.exports = mongoose.model('Campaign', campaignSchema);
