@@ -202,7 +202,7 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 // @desc    Manually send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
-const sendCampaign = asyncHandler(async (req, res) => { // NOTE: Function name is now consistently 'sendCampaign'
+const sendCampaign = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
     const campaign = await Campaign.findById(campaignId).populate('list');
@@ -232,7 +232,7 @@ const sendCampaign = asyncHandler(async (req, res) => { // NOTE: Function name i
 
     if (subscribers.length === 0) {
         res.status(400);
-        throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
+        throw new new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
     }
 
     campaign.status = 'sending';
@@ -660,7 +660,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendCampaign, // Correctly exported by name
+    sendCampaign,
     getDashboardStats,
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries,
