@@ -236,9 +236,10 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
     }
 
     campaign.status = 'sending';
-    campaign.lastSentAt = new Date();
+    campaign.lastSentAt = new Date(); // Update lastSentAt on initial status change to 'sending'
     campaign.totalRecipients = subscribers.length;
     await campaign.save(); // Save initial 'sending' status
+    console.log(`[SendCampaignManually] Campaign ${campaign._id} initiated send, status: 'sending', totalRecipients: ${campaign.totalRecipients}`);
 
     let successfulSends = 0;
     let failedSends = 0;
@@ -262,12 +263,6 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                 subscriber._id,
                 campaign.list._id
             );
-
-            if (result.success) {
-                console.log(`[SendCampaign] Email to ${subscriber.email} SUCCESS.`);
-            } else {
-                console.error(`[SendCampaign] Email to ${subscriber.email} FAILED: ${result.message}`, result.error);
-            }
             return result;
         });
 
@@ -281,43 +276,44 @@ const sendCampaignManually = asyncHandler(async (req, res) => {
                     failedSends++;
                     const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
                     const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
-                    console.error(`[CampaignController] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
+                    console.error(`[SendCampaignManually] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
                 }
             } else if (outcome.status === 'rejected') {
                 failedSends++;
-                console.error(`[CampaignController] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
+                console.error(`[SendCampaignManually] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
             }
         });
 
+        console.log(`[SendCampaignManually] After all emails processed: successfulSends = ${successfulSends}, failedSends = ${failedSends}`);
+
         campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-        campaign.emailsSent = successfulSends;
+        // CRITICAL FIX: Use 'emailsSuccessfullySent' as defined in your Campaign model
+        campaign.emailsSuccessfullySent = successfulSends;
+        campaign.sentAt = new Date(); // Update sentAt to the actual completion time
 
         try {
             await campaign.save(); // Final save with actual sent count and status
-            console.log(`[CampaignController] Campaign ${campaign._id} final status updated to ${campaign.status}, emailsSent: ${campaign.emailsSent}`);
+            console.log(`[SendCampaignManually] Campaign ${campaign._id} final status updated to ${campaign.status}, emailsSuccessfullySent: ${campaign.emailsSuccessfullySent}, sentAt: ${campaign.sentAt}`);
         } catch (saveError) {
-            console.error(`[CampaignController] CRITICAL ERROR: Failed to save final campaign status and emailsSent for ${campaign._id}:`, saveError);
-            // Even if this save fails, we should still respond to the user if previous operations were successful
+            console.error(`[SendCampaignManually] CRITICAL ERROR: Failed to save final campaign status and emailsSuccessfullySent for ${campaign._id}:`, saveError);
         }
 
-
         res.status(200).json({
-            message: 'Campaign sending initiated. Check logs for details.',
+            message: 'Campaign sending initiated. Check backend logs for details.',
             totalSubscribers: subscribers.length,
             successfulSends: successfulSends,
             failedSends: failedSends,
         });
 
     } catch (error) {
-        console.error('[CampaignController] Error during campaign sending process:', error.response?.body || error.message || error);
-        // Attempt to mark campaign as failed if an error occurs earlier in the sending process
-        if (campaign.status === 'sending') { // Only if still in 'sending' state
+        console.error('[SendCampaignManually] Error during campaign sending process (outer catch):', error.response?.body || error.message || error);
+        if (campaign.status === 'sending') {
             campaign.status = 'failed';
             try {
                 await campaign.save();
-                console.log(`[CampaignController] Campaign ${campaign._id} status set to 'failed' due to error.`);
+                console.log(`[SendCampaignManually] Campaign ${campaign._id} status set to 'failed' due to outer error.`);
             } catch (failSaveError) {
-                console.error(`[CampaignController] Failed to save 'failed' status for campaign ${campaign._id}:`, failSaveError);
+                console.error(`[SendCampaignManually] Failed to save 'failed' status for campaign ${campaign._id} in outer catch:`, failSaveError);
             }
         }
         res.status(500).json({
@@ -342,12 +338,11 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const totalLists = await List.countDocuments({ user: userId });
 
     // Total Subscribers for lists owned by the user
-    // Aggregates total unique subscribed emails across all user's lists
     const totalSubscribersAggregate = await List.aggregate([
         { $match: { user: new mongoose.Types.ObjectId(userId) } },
         {
             $lookup: {
-                from: 'subscribers', // The name of the subscribers collection
+                from: 'subscribers',
                 localField: '_id',
                 foreignField: 'list',
                 as: 'subscribersInList'
@@ -355,11 +350,10 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         },
         { $unwind: { path: '$subscribersInList', preserveNullAndEmptyArrays: true } },
         { $match: { 'subscribersInList.status': 'subscribed' } },
-        { $group: { _id: '$subscribersInList.email' } }, // Group by email to count unique subscribers across lists
+        { $group: { _id: '$subscribersInList.email' } },
         { $count: 'total' }
     ]);
     const totalSubscribers = totalSubscribersAggregate.length > 0 ? totalSubscribersAggregate[0].total : 0;
-
 
     // Campaigns Sent count for the user
     const campaignsSent = await Campaign.countDocuments({ user: userId, status: 'sent' });
@@ -385,7 +379,8 @@ const getDashboardStats = asyncHandler(async (req, res) => {
             {
                 $group: {
                     _id: null,
-                    sumEmailsSent: { $sum: '$emailsSent' },
+                    // FIX: Sum 'emailsSuccessfullySent' as per the model
+                    sumEmailsSent: { $sum: '$emailsSuccessfullySent' },
                     sumUnsubscribed: { $sum: '$unsubscribedCount' },
                 }
             },
@@ -516,7 +511,8 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
         ]);
         const uniqueClicksCount = uniqueClicks.length > 0 ? uniqueClicks[0].uniqueCount : 0;
 
-        const emailsSent = campaign.emailsSent || 0;
+        // FIX: Use 'emailsSuccessfullySent' from campaign model
+        const emailsSent = campaign.emailsSuccessfullySent || 0;
         const openRate = emailsSent > 0 ? (uniqueOpensCount / emailsSent * 100) : 0;
         const clickRate = emailsSent > 0 ? (uniqueClicksCount / emailsSent * 100) : 0;
 
