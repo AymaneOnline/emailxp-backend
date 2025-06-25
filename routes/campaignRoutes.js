@@ -9,7 +9,7 @@ const {
     updateCampaign,
     deleteCampaign,
     sendTestEmail,
-    sendCampaign, // This is now correctly imported by its name
+    sendCampaign, // This should now correctly import the function
     getDashboardStats,
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries
@@ -29,7 +29,7 @@ router.route('/:id')
     .delete(deleteCampaign);
 
 router.post('/:id/send-test', sendTestEmail);
-router.post('/:id/send', sendCampaign); // Now 'sendCampaign' is correctly imported and passed as a function
+router.post('/:id/send', sendCampaign); // Now 'sendCampaign' should be a valid function
 
 router.get('/dashboard-stats', getDashboardStats);
 
