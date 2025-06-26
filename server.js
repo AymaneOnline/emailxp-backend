@@ -8,12 +8,13 @@ const connectDB = require('./config/db');
 require('./config/cloudinary');
 
 const userRoutes = require('./routes/userRoutes');
-const campaignRoutes = require('./routes/campaignRoutes'); // This is line 11
+const campaignRoutes = require('./routes/campaignRoutes');
 const listRoutes = require('./routes/listRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
 const templateRoutes = require('./routes/templateRoutes');
 const trackingRoutes = require('./routes/trackingRoutes');
-const uploadRoutes = require('./routes/uploadRoutes');
+// const uploadRoutes = require('./routes/uploadRoutes'); // We will replace this with new file routes for general files
+const fileRoutes = require('./routes/fileRoutes'); // NEW: Import file routes
 
 connectDB();
 
@@ -29,9 +30,10 @@ app.use('/api/lists', listRoutes);
 app.use('/api/subscribers', subscriberRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/track', trackingRoutes);
-app.use('/api/upload', uploadRoutes);
+// app.use('/api/upload', uploadRoutes); // Replaced by more general file routes
+app.use('/api/files', fileRoutes); // NEW: Use file routes for general file management
 
-// NEW: Simple status endpoint for frontend checks
+// Simple status endpoint for frontend checks
 app.get('/api/status', (req, res) => {
     res.status(200).json({ message: 'Backend API is running!' });
 });
