@@ -11,6 +11,8 @@ const mongoose = require('mongoose');
 
 const { sendEmail } = require('../services/emailService');
 
+// Removed: Diagnostic _VERSION_ID_ and console.log for clean code
+
 // @desc    Get all campaigns for the authenticated user
 // @route   GET /api/campaigns
 // @access  Private
@@ -160,7 +162,7 @@ const updateCampaign = asyncHandler(async (req, res) => {
     }
 
     const now = new Date();
-    const currentScheduledAt = campaign.scheduledAt ? new Date(campaign.scheduledAt) : null;
+    const currentScheduledAt = campaign.scheduledAt ? new Date(currentScheduledAt) : null;
 
     if (currentScheduledAt && currentScheduledAt > now) {
         campaign.status = 'scheduled';
@@ -202,7 +204,7 @@ const deleteCampaign = asyncHandler(async (req, res) => {
 // @desc Send a test email for a campaign
 // @route POST /api/campaigns/:id/send-test
 // @access Private
-const sendTestEmail = asyncHandler(async (req, res) => { // This function is defined here
+const sendTestEmail = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id);
     const { recipientEmail } = req.body;
 
@@ -689,7 +691,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendTestEmail, // Explicitly exported now!
+    sendTestEmail,
     sendCampaign,
     getDashboardStats,
     getCampaignAnalytics,
