@@ -8,12 +8,12 @@ const {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
-    sendTestEmail,
-    sendCampaign, // This should now correctly import the function
+    sendTestEmail, // Will now be imported correctly
+    sendCampaign,
     getDashboardStats,
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries
-} = require('../controllers/campaignController');
+} = require('../controllers/campaignController'); // Import directly from module.exports
 const { protect } = require('../middleware/authMiddleware');
 
 // Protect all campaign routes
@@ -28,8 +28,8 @@ router.route('/:id')
     .put(updateCampaign)
     .delete(deleteCampaign);
 
-router.post('/:id/send-test', sendTestEmail);
-router.post('/:id/send', sendCampaign); // Now 'sendCampaign' should be a valid function
+router.post('/:id/send-test', sendTestEmail); // This should now work!
+router.post('/:id/send', sendCampaign);
 
 router.get('/dashboard-stats', getDashboardStats);
 

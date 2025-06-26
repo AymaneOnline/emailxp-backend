@@ -199,6 +199,35 @@ const deleteCampaign = asyncHandler(async (req, res) => {
     res.status(200).json({ id: req.params.id, message: 'Campaign deleted successfully' });
 });
 
+// @desc Send a test email for a campaign
+// @route POST /api/campaigns/:id/send-test
+// @access Private
+const sendTestEmail = asyncHandler(async (req, res) => { // This function is defined here
+    const campaign = await Campaign.findById(req.params.id);
+    const { recipientEmail } = req.body;
+
+    if (!campaign) {
+        res.status(404);
+        throw new Error('Campaign not found');
+    }
+
+    if (campaign.user.toString() !== req.user.id) {
+        res.status(401);
+        throw new Error('User not authorized');
+    }
+
+    if (!recipientEmail) {
+        res.status(400);
+        throw new Error('Please provide a recipient email for the test.');
+    }
+
+    // TODO: Implement actual email sending logic here (e.g., using Nodemailer)
+    // For now, simulate success
+    console.log(`[EmailService] Simulating sending test email for campaign "${campaign.name}" to ${recipientEmail}`);
+    res.status(200).json({ message: 'Test email simulated successfully!' });
+});
+
+
 // @desc    Manually send a campaign to its associated list subscribers immediately
 // @route   POST /api/campaigns/:id/send
 // @access  Private
@@ -232,7 +261,7 @@ const sendCampaign = asyncHandler(async (req, res) => {
 
     if (subscribers.length === 0) {
         res.status(400);
-        throw new new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
+        throw new Error(`The list "${campaign.list.name}" has no active subscribers. Please add subscribers to the list before sending this campaign.`);
     }
 
     campaign.status = 'sending';
@@ -660,6 +689,7 @@ module.exports = {
     getCampaignById,
     updateCampaign,
     deleteCampaign,
+    sendTestEmail, // Explicitly exported now!
     sendCampaign,
     getDashboardStats,
     getCampaignAnalytics,
