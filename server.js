@@ -8,7 +8,7 @@ const connectDB = require('./config/db');
 require('./config/cloudinary');
 
 const userRoutes = require('./routes/userRoutes');
-const campaignRoutes = require('./routes/campaignRoutes');
+const campaignRoutes = require('./routes/campaignRoutes'); // This is line 11
 const listRoutes = require('./routes/listRoutes');
 const subscriberRoutes = require('./routes/subscriberRoutes');
 const templateRoutes = require('./routes/templateRoutes');
