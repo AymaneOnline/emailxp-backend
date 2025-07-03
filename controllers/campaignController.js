@@ -11,21 +11,61 @@ const mongoose = require('mongoose');
 
 const { sendEmail } = require('../services/emailService');
 
-// Removed: Diagnostic _VERSION_ID_ and console.log for clean code
+// Helper function to calculate date ranges for filtering
+const getDateRange = (timeframe) => {
+    const now = new Date();
+    let startDate;
 
-// @desc    Get all campaigns for the authenticated user
-// @route   GET /api/campaigns
-// @access  Private
+    switch (timeframe) {
+        case 'Last 7 days':
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 7);
+            break;
+        case 'Last 30 days':
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 30);
+            break;
+        case 'Last 90 days':
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 90);
+            break;
+        case 'All Time': // Add an 'All Time' option if you want to fetch everything
+            startDate = null; // No start date, fetch all
+            break;
+        default: // Default to Last 30 days if no valid timeframe
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 30);
+            break;
+    }
+    return startDate;
+};
+
+
+// @desc    Get all campaigns for the authenticated user
+// @route   GET /api/campaigns
+// @access  Private
 const getCampaigns = asyncHandler(async (req, res) => {
-    const campaigns = await Campaign.find({ user: req.user.id })
+    const { timeframe } = req.query; // Get timeframe from query params
+    const userId = req.user.id;
+
+    let query = { user: userId };
+    if (timeframe && timeframe !== 'All Time') {
+        const startDate = getDateRange(timeframe);
+        if (startDate) {
+            query.createdAt = { $gte: startDate }; // Filter by creation date
+        }
+    }
+
+    const campaigns = await Campaign.find(query)
         .populate('list', 'name')
-        .populate('template', 'name subject');
+        .populate('template', 'name subject')
+        .sort({ createdAt: -1 }); // Sort by newest first
     res.status(200).json(campaigns);
 });
 
-// @desc    Create a new campaign
-// @route   POST /api/campaigns
-// @access  Private
+// @desc    Create a new campaign
+// @route   POST /api/campaigns
+// @access  Private
 const createCampaign = asyncHandler(async (req, res) => {
     const { name, subject, htmlContent, plainTextContent, list: listId, status, scheduledAt, templateId } = req.body;
 
@@ -81,9 +121,9 @@ const createCampaign = asyncHandler(async (req, res) => {
     res.status(201).json(campaign);
 });
 
-// @desc    Get a single campaign by ID for the authenticated user
-// @route   GET /api/campaigns/:id
-// @access  Private
+// @desc    Get a single campaign by ID for the authenticated user
+// @route   GET /api/campaigns/:id
+// @access  Private
 const getCampaignById = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id)
         .populate('list', 'name')
@@ -102,9 +142,9 @@ const getCampaignById = asyncHandler(async (req, res) => {
     res.status(200).json(campaign);
 });
 
-// @desc    Update a campaign
-// @route   PUT /api/campaigns/:id
-// @access  Private
+// @desc    Update a campaign
+// @route   PUT /api/campaigns/:id
+// @access  Private
 const updateCampaign = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id);
 
@@ -162,7 +202,7 @@ const updateCampaign = asyncHandler(async (req, res) => {
     }
 
     const now = new Date();
-    const currentScheduledAt = campaign.scheduledAt ? new Date(currentScheduledAt) : null;
+    const currentScheduledAt = campaign.scheduledAt ? new Date(campaign.scheduledAt) : null; // Corrected variable name
 
     if (currentScheduledAt && currentScheduledAt > now) {
         campaign.status = 'scheduled';
@@ -180,9 +220,9 @@ const updateCampaign = asyncHandler(async (req, res) => {
     res.status(200).json(updatedCampaign);
 });
 
-// @desc    Delete a campaign
-// @route   DELETE /api/campaigns/:id
-// @access  Private
+// @desc    Delete a campaign
+// @route   DELETE /api/campaigns/:id
+// @access  Private
 const deleteCampaign = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id);
 
@@ -230,9 +270,9 @@ const sendTestEmail = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Manually send a campaign to its associated list subscribers immediately
-// @route   POST /api/campaigns/:id/send
-// @access  Private
+// @desc    Manually send a campaign to its associated list subscribers immediately
+// @route   POST /api/campaigns/:id/send
+// @access  Private
 const sendCampaign = asyncHandler(async (req, res) => {
     const campaignId = req.params.id;
 
@@ -353,19 +393,41 @@ const sendCampaign = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Get aggregate dashboard statistics for the authenticated user
-// @route   GET /api/campaigns/dashboard-stats
-// @access  Private
+// @desc    Get aggregate dashboard statistics for the authenticated user
+// @route   GET /api/campaigns/dashboard-stats
+// @access  Private
 const getDashboardStats = asyncHandler(async (req, res) => {
     const userId = req.user.id;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { timeframe } = req.query; // Get timeframe from query params
 
-    const totalCampaigns = await Campaign.countDocuments({ user: userId });
-    const totalLists = await List.countDocuments({ user: userId });
+    let campaignMatchQuery = { user: new mongoose.Types.ObjectId(userId) };
+    let subscriberMatchQuery = { user: new mongoose.Types.ObjectId(userId) }; // For lists owned by user
+    let eventMatchQuery = {}; // For Open/Click events
 
+    if (timeframe && timeframe !== 'All Time') {
+        const startDate = getDateRange(timeframe);
+        if (startDate) {
+            campaignMatchQuery.createdAt = { $gte: startDate }; // Filter campaigns by creation
+            // For dashboard stats, we usually want to filter by when the campaign was sent
+            campaignMatchQuery.lastSentAt = { $gte: startDate, $ne: null }; // Only consider sent campaigns within timeframe
+
+            // For subscribers, filter by their creation date (subscribed date)
+            subscriberMatchQuery.createdAt = { $gte: startDate };
+
+            // For open/click events, filter by their timestamp
+            eventMatchQuery.timestamp = { $gte: startDate };
+        }
+    }
+
+    // Total Campaigns (filtered by timeframe if applicable)
+    const totalCampaigns = await Campaign.countDocuments(campaignMatchQuery);
+
+    // Total Lists (filtered by timeframe if applicable)
+    const totalLists = await List.countDocuments(subscriberMatchQuery); // Re-using subscriberMatchQuery for lists
+
+    // Total Active Subscribers (across all lists owned by user, filtered by subscription date if applicable)
     const totalSubscribersAggregate = await List.aggregate([
-        { $match: { user: new mongoose.Types.ObjectId(userId) } },
+        { $match: { user: new mongoose.Types.ObjectId(userId) } }, // Match lists owned by the user
         {
             $lookup: {
                 from: 'subscribers',
@@ -374,23 +436,35 @@ const getDashboardStats = asyncHandler(async (req, res) => {
                 as: 'subscribersInList'
             }
         },
-        { $unwind: { path: '$subscribersInList', preserveNullAndEmptyArrays: true } },
-        { $match: { 'subscribersInList.status': 'subscribed' } },
-        { $group: { _id: '$subscribersInList.email' } },
+        { $unwind: '$subscribersInList' }, // Unwind to process each subscriber
+        {
+            $match: {
+                'subscribersInList.status': 'subscribed',
+                ...(timeframe && timeframe !== 'All Time' && getDateRange(timeframe) ? { 'subscribersInList.createdAt': { $gte: getDateRange(timeframe) } } : {})
+            }
+        },
+        { $group: { _id: '$subscribersInList.email' } }, // Group by email to count unique subscribers
         { $count: 'total' }
     ]);
-    const totalSubscribers = totalSubscribersAggregate.length > 0 ? totalSubscribersAggregate[0].total : 0;
+    const totalActiveSubscribers = totalSubscribersAggregate.length > 0 ? totalSubscribersAggregate[0].total : 0;
 
-    const campaignsSent = await Campaign.countDocuments({ user: userId, status: 'sent' });
+    // Campaigns Sent (filtered by timeframe)
+    const campaignsSent = await Campaign.countDocuments({ ...campaignMatchQuery, status: 'sent' });
 
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(today.getDate() - 7);
+    // Recent Campaigns (already filtered by lastSentAt in your original code, keep this specific 7-day logic)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     const recentCampaigns = await Campaign.find({
         user: userId,
-        lastSentAt: { $gte: sevenDaysAgo }
+        lastSentAt: { $gte: sevenDaysAgo, $ne: null } // Ensure lastSentAt exists
     }).sort({ lastSentAt: -1 }).limit(5);
 
-    const sentCampaignIdsByUser = await Campaign.find({ user: userId, status: 'sent' }).select('_id');
+    // Get IDs of campaigns sent by the user within the selected timeframe
+    const sentCampaignIdsByUser = await Campaign.find({
+        user: userId,
+        status: 'sent',
+        ...(timeframe && timeframe !== 'All Time' && getDateRange(timeframe) ? { lastSentAt: { $gte: getDateRange(timeframe) } } : {})
+    }).select('_id');
     const sentCampaignObjectIds = sentCampaignIdsByUser.map(campaign => new mongoose.Types.ObjectId(campaign._id));
 
     let totalEmailsSent = 0;
@@ -421,8 +495,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
         }
     }
 
+    // Opens and Clicks stats (filtered by timeframe)
     const opensStats = await OpenEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignObjectIds } } },
+        { $match: { ...eventMatchQuery, campaign: { $in: sentCampaignObjectIds } } },
         {
             $group: {
                 _id: null,
@@ -442,7 +517,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const uniqueOpens = opensStats.length > 0 ? opensStats[0].unique : 0;
 
     const clicksStats = await ClickEvent.aggregate([
-        { $match: { campaign: { $in: sentCampaignObjectIds } } },
+        { $match: { ...eventMatchQuery, campaign: { $in: sentCampaignObjectIds } } },
         {
             $group: {
                 _id: null,
@@ -461,33 +536,36 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     const totalClicks = clicksStats.length > 0 ? clicksStats[0].total : 0;
     const uniqueClicks = clicksStats.length > 0 ? clicksStats[0].unique : 0;
 
-    const openRate = totalEmailsSent > 0 ? (uniqueOpens / totalEmailsSent * 100) : 0;
-    const clickRate = totalEmailsSent > 0 ? (uniqueClicks / totalEmailsSent * 100) : 0;
-
+    const CTOR = uniqueOpens > 0 ? (uniqueClicks / uniqueOpens * 100) : 0; // Click-to-Open Rate
 
     res.status(200).json({
         totalCampaigns,
         totalLists,
-        totalSubscribers,
+        totalActiveSubscribers, // Renamed for clarity on frontend
         campaignsSent,
         recentCampaigns,
-        performance: {
-            totalEmailsSent: totalEmailsSent,
-            totalOpens: totalOpens,
-            uniqueOpens: uniqueOpens,
-            totalClicks: totalClicks,
-            uniqueClicks: uniqueClicks,
-            totalUnsubscribed: totalUnsubscribed,
-            openRate: parseFloat(openRate.toFixed(2)),
-            clickRate: parseFloat(clickRate.toFixed(2))
-        }
+        emailsSent: totalEmailsSent, // Direct top-level fields for dashboard
+        opens: totalOpens,
+        clicks: totalClicks,
+        CTOR: parseFloat(CTOR.toFixed(2)), // Ensure CTOR is calculated and formatted
+        // You can keep the performance object if other parts of your frontend use it
+        // performance: {
+        //     totalEmailsSent: totalEmailsSent,
+        //     totalOpens: totalOpens,
+        //     uniqueOpens: uniqueOpens,
+        //     totalClicks: totalClicks,
+        //     uniqueClicks: uniqueClicks,
+        //     totalUnsubscribed: totalUnsubscribed,
+        //     openRate: parseFloat(openRate.toFixed(2)),
+        //     clickRate: parseFloat(clickRate.toFixed(2))
+        // }
     });
 });
 
 
-// @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
-// @route   GET /api/campaigns/:id/analytics
-// @access  Private
+// @desc    Get analytics for a specific campaign (e.g., opens, clicks over time)
+// @route   GET /api/campaigns/:id/analytics
+// @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
     const { id: campaignId } = req.params;
 
@@ -554,9 +632,9 @@ const getCampaignAnalytics = asyncHandler(async (req, res) => {
 });
 
 
-// @desc    Get time-series analytics (daily/weekly opens and clicks) for a specific campaign
-// @route   GET /api/campaigns/:id/analytics/time-series?period=daily || weekly
-// @access  Private
+// @desc    Get time-series analytics (daily/weekly opens and clicks) for a specific campaign
+// @route   GET /api/campaigns/:id/analytics/time-series?period=daily || weekly
+// @access  Private
 const getCampaignAnalyticsTimeSeries = asyncHandler(async (req, res) => {
     const { id: campaignId } = req.params;
     const { period = 'daily' } = req.query; // Default to daily, can be 'weekly'
