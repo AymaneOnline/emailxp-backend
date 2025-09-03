@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const subscriberSchema = new mongoose.Schema(
     {
@@ -56,6 +57,11 @@ const subscriberSchema = new mongoose.Schema(
         lastActivityAt: {
             type: Date,
             default: Date.now
+        },
+        // Unsubscribe token for secure unsubscribe links
+        unsubscribeToken: {
+            type: String,
+            index: true
         },
         // Location and timezone information
         location: {
@@ -158,6 +164,10 @@ subscriberSchema.statics.findActive = function(userId) {
 subscriberSchema.pre('save', function(next) {
     if (this.status === 'active' && !this.confirmedAt) {
         this.confirmedAt = new Date();
+    }
+    // Generate unsubscribe token if missing
+    if (!this.unsubscribeToken) {
+        this.unsubscribeToken = crypto.randomBytes(24).toString('hex');
     }
     next();
 });

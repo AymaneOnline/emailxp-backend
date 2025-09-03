@@ -105,7 +105,7 @@ router.get('/:id', async (req, res) => {
 // Create a new template
 router.post('/', async (req, res) => {
   try {
-    const { name, description, category, structure, tags } = req.body;
+    const { name, description, category, structure, tags, thumbnail } = req.body;
     
     // Validation
     if (!name || !structure) {
@@ -119,7 +119,8 @@ router.post('/', async (req, res) => {
       category: category || 'custom',
       structure,
       tags: tags || [],
-      type: 'user'
+      type: 'user',
+      thumbnail: thumbnail || undefined
     });
     
     await template.save();
@@ -137,7 +138,7 @@ router.post('/', async (req, res) => {
 // Update a template
 router.put('/:id', async (req, res) => {
   try {
-    const { name, description, category, structure, tags } = req.body;
+    const { name, description, category, structure, tags, thumbnail } = req.body;
     
     const template = await Template.findOne({
       _id: req.params.id,
@@ -155,6 +156,7 @@ router.put('/:id', async (req, res) => {
     if (category !== undefined) template.category = category;
     if (structure !== undefined) template.structure = structure;
     if (tags !== undefined) template.tags = tags;
+    if (thumbnail !== undefined) template.thumbnail = thumbnail;
     
     // Increment version
     template.version += 1;
@@ -230,7 +232,7 @@ router.post('/:id/duplicate', async (req, res) => {
   }
 });
 
-// Use a template (increment usage stats)
+// Use a template (validation + increment usage)
 router.post('/:id/use', async (req, res) => {
   try {
     const template = await Template.findOne({
@@ -244,6 +246,11 @@ router.post('/:id/use', async (req, res) => {
     
     if (!template) {
       return res.status(404).json({ message: 'Template not found' });
+    }
+
+    // Compliance validation
+    if (!template.hasFooterAndUnsubscribe || !template.hasFooterAndUnsubscribe()) {
+      return res.status(400).json({ message: 'Template must include a footer block containing an unsubscribe link ({{unsubscribeUrl}}).' });
     }
     
     await template.incrementUsage();
@@ -344,7 +351,7 @@ router.get('/:id/export', protect, async (req, res) => {
   }
 });
 
-// Import template
+// Import template (auto-inject compliant footer if missing)
 router.post('/import', protect, async (req, res) => {
   try {
     const { name, description, category, structure, tags } = req.body;
@@ -354,6 +361,40 @@ router.post('/import', protect, async (req, res) => {
       return res.status(400).json({ message: 'Name and structure are required' });
     }
 
+    const imported = { ...structure };
+    imported.blocks = Array.isArray(imported.blocks) ? imported.blocks : [];
+
+    // Normalize blocks: ensure content/styles objects
+    imported.blocks = imported.blocks.map(b => ({
+      ...b,
+      content: b && typeof b.content === 'object' ? b.content : (b?.content ? { text: b.content } : {}),
+      styles: b && typeof b.styles === 'object' ? b.styles : {}
+    }));
+
+    // Check footer compliance
+    let hasFooter = imported.blocks.some(b => b.type === 'footer');
+    let footerHasToken = false;
+    if (hasFooter) {
+      const f = imported.blocks.find(b => b.type === 'footer');
+      const footerText = (f?.content?.text || '').toString();
+      footerHasToken = /\{\{\s*unsubscribeUrl\s*\}\}/i.test(footerText);
+    }
+
+    let importedAutoFooter = false;
+    if (!hasFooter || !footerHasToken) {
+      // Append a default compliant footer
+      imported.blocks.push({
+        id: Date.now() + Math.random(),
+        type: 'footer',
+        content: {
+          text: 'You are receiving this email because you subscribed. If you wish to unsubscribe, click here: <a href="{{unsubscribeUrl}}">Unsubscribe</a>',
+          align: 'center'
+        },
+        styles: { fontSize: '12px', color: '#666666', padding: '20px 0' }
+      });
+      importedAutoFooter = true;
+    }
+
     // Create new template from imported data
     const template = new Template({
       user: req.user._id,
@@ -361,7 +402,7 @@ router.post('/import', protect, async (req, res) => {
       description: description || 'Imported template',
       category: category || 'custom',
       type: 'user',
-      structure,
+      structure: imported,
       tags: tags || [],
       isActive: true,
       stats: {
@@ -374,6 +415,7 @@ router.post('/import', protect, async (req, res) => {
 
     res.status(201).json({
       message: 'Template imported successfully',
+      importedAutoFooter,
       template: {
         _id: template._id,
         name: template.name,

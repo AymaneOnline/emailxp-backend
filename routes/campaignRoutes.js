@@ -9,6 +9,64 @@ const mailgunService = require('../services/mailgunService');
 
 const router = express.Router();
 
+// Create campaign
+router.post('/', protect, asyncHandler(async (req, res) => {
+  const { name, subject, fromEmail, fromName, htmlContent, group, groups = [], segments = [], individuals = [], scheduledAt, scheduleType, scheduleTimezone, template } = req.body;
+
+  if (!name || !subject || (!htmlContent && !template)) {
+    res.status(400);
+    throw new Error('Please include required fields: name, subject, and either htmlContent or template');
+  }
+
+  const campaign = await Campaign.create({
+    user: req.user.id,
+    name,
+    subject,
+    fromEmail: fromEmail || req.user.email,
+    fromName: fromName || req.user.name,
+    htmlContent: htmlContent || '',
+    group: groups?.[0] || group || undefined,
+    groups: groups || [],
+    segments: segments || [],
+    individualSubscribers: individuals || [],
+    scheduledAt: scheduledAt || null,
+    scheduleType: scheduleType || 'fixed',
+    scheduleTimezone: scheduleTimezone || null,
+    status: scheduledAt && new Date(scheduledAt) > new Date() ? 'scheduled' : 'draft',
+    template: template || null
+  });
+
+  res.status(201).json(campaign);
+}));
+
+// Update campaign
+router.put('/:id', protect, asyncHandler(async (req, res) => {
+  const { name, subject, fromEmail, fromName, htmlContent, group, groups = [], segments = [], individuals = [], scheduledAt, scheduleType, scheduleTimezone, template } = req.body;
+
+  const update = {
+    name,
+    subject,
+    fromEmail: fromEmail || req.user.email,
+    fromName: fromName || req.user.name,
+    htmlContent,
+    group: groups?.[0] || group,
+    groups,
+    segments,
+    individualSubscribers: individuals,
+    scheduledAt: scheduledAt || null,
+    scheduleType: scheduleType || 'fixed',
+    scheduleTimezone: scheduleTimezone || null,
+    template: template || null
+  };
+
+  const updated = await Campaign.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+  if (!updated) {
+    res.status(404);
+    throw new Error('Campaign not found');
+  }
+  res.json(updated);
+}));
+
 /**
  * @desc    Send campaign immediately
  * @route   POST /api/campaigns/:id/send

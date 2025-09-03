@@ -58,7 +58,7 @@ const campaignSchema = mongoose.Schema(
         },
         htmlContent: {
             type: String,
-            required: [true, 'Please add HTML content'],
+            default: '', // Optional when using a structured Template
         },
         plainTextContent: { // This field is correctly added
             type: String,
