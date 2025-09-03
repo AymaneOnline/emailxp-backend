@@ -67,8 +67,7 @@ class EmailService {
         }
       
       case 'resend':
-        // You can implement resend service here if needed
-        throw new Error('Resend service not implemented in unified service');
+        return require('./resendService');
       
       case 'sendgrid':
         // You can implement sendgrid service here if needed

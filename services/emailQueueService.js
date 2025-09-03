@@ -222,9 +222,80 @@ class EmailQueueService {
       throw new Error(`Campaign ${campaignId} not found`);
     }
 
-    const { subscribers, template, subject, fromName, fromEmail } = campaign;
+    let { subscribers, template, subject, fromName, fromEmail } = campaign;
+
+    // Resolve recipients if not pre-populated
+    if (!subscribers || !Array.isArray(subscribers) || subscribers.length === 0) {
+      const Subscriber = require('../models/Subscriber');
+      const mongoose = require('mongoose');
+      const userId = campaign.user || campaign.userId || null;
+
+      const idToObjectId = (ids = []) => ids
+        .filter(Boolean)
+        .map(id => {
+          try { return new mongoose.Types.ObjectId(id); } catch { return null; }
+        })
+        .filter(Boolean);
+
+      const groupIds = idToObjectId(campaign.groups || []);
+      const segmentIds = idToObjectId(campaign.segments || []);
+      const individualIds = idToObjectId(campaign.individualSubscribers || []);
+
+      // Base filter
+      const baseFilter = { user: userId, status: 'subscribed', isDeleted: false };
+
+      // From groups
+      let groupSubs = [];
+      if (groupIds.length) {
+        groupSubs = await Subscriber.find({ ...baseFilter, groups: { $in: groupIds } }, '_id email name location.timezone unsubscribeToken');
+      }
+
+      // From segments - basic approach: if you have a segment routine, call it; otherwise fallback to tag/status
+      let segmentSubs = [];
+      if (segmentIds.length) {
+        // TODO: integrate real segment logic if available; fallback pulls all subscribed for now
+        segmentSubs = await Subscriber.find(baseFilter, '_id email name location.timezone unsubscribeToken');
+      }
+
+      // Individuals
+      let individualSubs = [];
+      if (individualIds.length) {
+        individualSubs = await Subscriber.find({ ...baseFilter, _id: { $in: individualIds } }, '_id email name location.timezone unsubscribeToken');
+      }
+
+      // Combine and dedupe by _id
+      const map = new Map();
+      [...groupSubs, ...segmentSubs, ...individualSubs].forEach(s => map.set(String(s._id), s));
+      subscribers = Array.from(map.values());
+    }
+
     const totalSubscribers = subscribers.length;
     let processedCount = 0;
+
+    // Resolve base HTML: prefer template.generateHTML(); fallback to legacy campaign.htmlContent
+    let baseHtml = '';
+    if (template) {
+      try {
+        baseHtml = template.generateHTML();
+      } catch (e) {
+        console.error('Failed to generate HTML from template:', e);
+      }
+    }
+    if (!baseHtml && campaign.htmlContent) {
+      baseHtml = campaign.htmlContent;
+    }
+
+    // Increment template usage once per campaign send
+    if (template && typeof template.incrementUsage === 'function') {
+      try { await template.incrementUsage(); } catch (e) { console.warn('Failed to increment template usage:', e.message); }
+    }
+
+    // Validate compliance: template must contain footer with unsubscribe
+    if (template && typeof template.hasFooterAndUnsubscribe === 'function') {
+      if (!template.hasFooterAndUnsubscribe()) {
+        throw new Error('Selected template is missing required footer/unsubscribe content.');
+      }
+    }
 
     // Process subscribers in batches
     const batchSize = 100;
@@ -233,7 +304,7 @@ class EmailQueueService {
       
       // Create email jobs for batch
       const emailJobs = batch.map(subscriber => {
-        const personalizedContent = this.personalizeContent(template.structure, subscriber);
+        const personalizedContent = this.personalizeHtml(baseHtml, subscriber);
         
         return this.addEmailToQueue({
           to: subscriber.email,
@@ -270,23 +341,19 @@ class EmailQueueService {
   }
 
   /**
-   * Personalize email content
+   * Personalize already-generated HTML with merge tags
    */
-  personalizeContent(templateStructure, subscriber) {
-    // Convert template structure to HTML with personalization
-    let html = this.templateToHTML(templateStructure);
-    
-    // Replace personalization tokens
-    html = html.replace(/\{\{firstName\}\}/g, subscriber.firstName || 'there');
-    html = html.replace(/\{\{lastName\}\}/g, subscriber.lastName || '');
-    html = html.replace(/\{\{email\}\}/g, subscriber.email);
-    html = html.replace(/\{\{fullName\}\}/g, `${subscriber.firstName || ''} ${subscriber.lastName || ''}`.trim() || 'there');
-    
-    // Add unsubscribe link
+  personalizeHtml(baseHtml, subscriber) {
+    if (!baseHtml) return '';
+    const fullName = `${subscriber.firstName || ''} ${subscriber.lastName || ''}`.trim() || 'there';
     const unsubscribeUrl = `${process.env.FRONTEND_URL}/unsubscribe?token=${subscriber.unsubscribeToken}`;
-    html = html.replace(/\{\{unsubscribeUrl\}\}/g, unsubscribeUrl);
-    
-    return html;
+
+    return baseHtml
+      .replace(/\{\{firstName\}\}/g, subscriber.firstName || 'there')
+      .replace(/\{\{lastName\}\}/g, subscriber.lastName || '')
+      .replace(/\{\{fullName\}\}/g, fullName)
+      .replace(/\{\{email\}\}/g, subscriber.email)
+      .replace(/\{\{unsubscribeUrl\}\}/g, unsubscribeUrl);
   }
 
   /**
@@ -297,92 +364,6 @@ class EmailQueueService {
       .replace(/\{\{firstName\}\}/g, subscriber.firstName || 'there')
       .replace(/\{\{lastName\}\}/g, subscriber.lastName || '')
       .replace(/\{\{fullName\}\}/g, `${subscriber.firstName || ''} ${subscriber.lastName || ''}`.trim() || 'there');
-  }
-
-  /**
-   * Convert template structure to HTML
-   */
-  templateToHTML(structure) {
-    if (!structure || !structure.blocks) return '';
-    
-    const { blocks, settings = {} } = structure;
-    
-    let html = `
-      <div style="
-        background-color: ${settings.backgroundColor || '#f4f4f4'};
-        font-family: ${settings.fontFamily || 'Arial, sans-serif'};
-        font-size: ${settings.fontSize || '16px'};
-        line-height: ${settings.lineHeight || '1.6'};
-        color: ${settings.textColor || '#333333'};
-        padding: 20px;
-      ">
-        <div style="
-          max-width: ${settings.contentWidth || '600px'};
-          margin: 0 auto;
-          background-color: #ffffff;
-          padding: 20px;
-        ">
-    `;
-    
-    blocks.forEach(block => {
-      html += this.blockToHTML(block);
-    });
-    
-    html += `
-        </div>
-      </div>
-    `;
-    
-    return html;
-  }
-
-  /**
-   * Convert individual block to HTML
-   */
-  blockToHTML(block) {
-    const { type, content } = block;
-    const styles = content.styles || {};
-    
-    switch (type) {
-      case 'heading':
-        const level = content.level || 'h2';
-        return `<${level} style="${this.stylesToString(styles)}">${content.text || ''}</${level}>`;
-      
-      case 'text':
-        return `<p style="${this.stylesToString(styles)}">${content.text || ''}</p>`;
-      
-      case 'button':
-        return `
-          <div style="text-align: center; margin: 20px 0;">
-            <a href="${content.link || '#'}" style="${this.stylesToString(styles)}">${content.text || 'Click Here'}</a>
-          </div>
-        `;
-      
-      case 'image':
-        return `
-          <div style="text-align: center; margin: 20px 0;">
-            <img src="${content.src || ''}" alt="${content.alt || ''}" style="${this.stylesToString(styles)}" />
-          </div>
-        `;
-      
-      case 'divider':
-        return `<hr style="${this.stylesToString(styles)}" />`;
-      
-      case 'spacer':
-        return `<div style="height: ${content.height || '20px'};"></div>`;
-      
-      default:
-        return '';
-    }
-  }
-
-  /**
-   * Convert styles object to CSS string
-   */
-  stylesToString(styles) {
-    return Object.entries(styles)
-      .map(([key, value]) => `${key.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${value}`)
-      .join('; ');
   }
 
   /**

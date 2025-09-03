@@ -2,14 +2,14 @@
 
 const cloudinary = require('cloudinary').v2;
 
-// Add these logs to verify what values are actually being read from environment variables
-console.log('--- Cloudinary Config Check ---');
-console.log('CLOUDINARY_CLOUD_NAME (raw):', process.env.CLOUDINARY_CLOUD_NAME);
-console.log('CLOUDINARY_API_KEY (raw):', process.env.CLOUDINARY_API_KEY);
-// IMPORTANT: DO NOT log the full API Secret directly in production logs.
-// For debugging, checking its presence and length can be useful.
-console.log('CLOUDINARY_API_SECRET (presence and length):', process.env.CLOUDINARY_API_SECRET ? `Loaded, length: ${process.env.CLOUDINARY_API_SECRET.length}` : 'NOT LOADED');
-console.log('-----------------------------');
+// Optional debug logs only in non-production environments
+if (process.env.NODE_ENV !== 'production') {
+  console.log('--- Cloudinary Config Check ---');
+  console.log('CLOUDINARY_CLOUD_NAME (present):', !!process.env.CLOUDINARY_CLOUD_NAME);
+  console.log('CLOUDINARY_API_KEY (present):', !!process.env.CLOUDINARY_API_KEY);
+  console.log('CLOUDINARY_API_SECRET (present/length):', process.env.CLOUDINARY_API_SECRET ? `Loaded, length: ${process.env.CLOUDINARY_API_SECRET.length}` : 'NOT LOADED');
+  console.log('-----------------------------');
+}
 
 
 try {

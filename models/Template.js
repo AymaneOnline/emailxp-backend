@@ -42,7 +42,9 @@ const templateSchema = new mongoose.Schema({
         fontFamily: 'Arial, sans-serif',
         fontSize: 14,
         lineHeight: 1.5,
-        textColor: '#333333'
+        textColor: '#333333',
+        linkColor: '#007cba',
+        preheader: ''
       }
     }
   },
@@ -130,9 +132,30 @@ templateSchema.methods.incrementUsage = function() {
   return this.save();
 };
 
+// Utility: safely serialize style objects to inline CSS
+function styleObjectToString(styleObj) {
+  if (!styleObj || typeof styleObj !== 'object') return '';
+  return Object.entries(styleObj)
+    .filter(([k, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => {
+      const key = k.replace(/[A-Z]/g, m => '-' + m.toLowerCase()); // camelCase -> kebab-case
+      const needsPx = typeof v === 'number' && !key.includes('color') && !key.includes('opacity') && !key.includes('z-index') && !key.includes('font-weight') && !key.includes('line-height');
+      return `${key}: ${v}${needsPx ? 'px' : ''};`;
+    })
+    .join(' ');
+}
+
 // Method to generate HTML from structure
 templateSchema.methods.generateHTML = function() {
-  const { blocks, settings } = this.structure;
+  const { blocks = [], settings = {} } = this.structure || {};
+  const backgroundColor = settings.backgroundColor || '#f4f4f4';
+  const contentWidth = settings.contentWidth || 600;
+  const fontFamily = settings.fontFamily || 'Arial, sans-serif';
+  const fontSize = settings.fontSize || 14;
+  const lineHeight = settings.lineHeight || 1.5;
+  const textColor = settings.textColor || '#333333';
+  const linkColor = settings.linkColor || '#007cba';
+  const preheader = settings.preheader || '';
   
   let html = `
     <!DOCTYPE html>
@@ -142,145 +165,102 @@ templateSchema.methods.generateHTML = function() {
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>${this.name}</title>
       <style>
-        body {
-          margin: 0;
-          padding: 0;
-          background-color: ${settings.backgroundColor || '#f4f4f4'};
-          font-family: ${settings.fontFamily || 'Arial, sans-serif'};
-          font-size: ${settings.fontSize || 14}px;
-          line-height: ${settings.lineHeight || 1.5};
-          color: ${settings.textColor || '#333333'};
-        }
-        .email-container {
-          max-width: ${settings.contentWidth || 600}px;
-          margin: 0 auto;
-          background-color: #ffffff;
-        }
-        .block {
-          padding: 20px;
-        }
-        .text-block {
-          padding: 15px 20px;
-        }
-        .image-block {
-          text-align: center;
-          padding: 10px 20px;
-        }
-        .image-block img {
-          max-width: 100%;
-          height: auto;
-        }
-        .button-block {
-          text-align: center;
-          padding: 20px;
-        }
-        .button {
-          display: inline-block;
-          padding: 12px 24px;
-          background-color: #007bff;
-          color: #ffffff;
-          text-decoration: none;
-          border-radius: 4px;
-          font-weight: bold;
-        }
-        .divider-block {
-          padding: 10px 20px;
-        }
-        .divider {
-          height: 1px;
-          background-color: #e0e0e0;
-          margin: 10px 0;
-        }
-        .spacer-block {
-          height: 20px;
-        }
-        @media only screen and (max-width: 600px) {
-          .email-container {
-            width: 100% !important;
-          }
-          .block {
-            padding: 15px !important;
-          }
-        }
+        body { margin: 0; padding: 0; background-color: ${backgroundColor}; font-family: ${fontFamily}; font-size: ${fontSize}px; line-height: ${lineHeight}; color: ${textColor}; }
+        a { color: ${linkColor}; }
+        .email-container { max-width: ${contentWidth}px; margin: 0 auto; background-color: #ffffff; }
+        .block { padding: 20px; }
+        .text-block { padding: 15px 20px; }
+        .image-block { text-align: center; padding: 10px 20px; }
+        .image-block img { max-width: 100%; height: auto; }
+        .button-block { text-align: center; padding: 20px; }
+        .button { display: inline-block; padding: 12px 24px; background-color: ${linkColor}; color: #ffffff; text-decoration: none; border-radius: 4px; font-weight: bold; }
+        .divider-block { padding: 10px 20px; }
+        .divider { height: 1px; background-color: #e0e0e0; margin: 10px 0; }
+        .spacer-block { height: 20px; }
+        @media only screen and (max-width: 600px) { .email-container { width: 100% !important; } .block { padding: 15px !important; } }
       </style>
     </head>
     <body>
+      ${preheader ? `<div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>` : ''}
       <div class="email-container">
   `;
 
   // Generate HTML for each block
   blocks.forEach(block => {
+    const stylesStr = styleObjectToString(block.styles || {});
     switch (block.type) {
-      case 'text':
+      case 'text': {
+        const text = block.content?.text ?? block.content ?? '';
         html += `
-          <div class="text-block block" style="${block.styles || ''}">
-            ${block.content || ''}
+          <div class="text-block block" style="${stylesStr}">
+            ${text}
           </div>
         `;
         break;
-      
-      case 'image':
+      }
+      case 'heading': {
+        const level = block.content?.level || 'h2';
+        const text = block.content?.text || '';
+        html += `<${level} class="block" style="${stylesStr}">${text}</${level}>`;
+        break;
+      }
+      case 'image': {
+        const src = block.content?.src ?? block.src ?? '';
+        const alt = block.content?.alt ?? block.alt ?? '';
         html += `
-          <div class="image-block block" style="${block.styles || ''}">
-            <img src="${block.src || ''}" alt="${block.alt || ''}" style="max-width: 100%; height: auto;">
+          <div class="image-block block" style="${stylesStr}">
+            <img src="${src}" alt="${alt}" style="max-width: 100%; height: auto;" />
           </div>
         `;
         break;
-      
-      case 'button':
+      }
+      case 'button': {
+        const text = block.content?.text ?? block.text ?? 'Click Here';
+        const href = block.content?.link ?? block.href ?? '#';
+        const bg = (block.styles && block.styles.backgroundColor) || linkColor;
+        const color = (block.styles && block.styles.color) || '#ffffff';
         html += `
-          <div class="button-block block" style="${block.styles || ''}">
-            <a href="${block.href || '#'}" class="button" style="background-color: ${block.backgroundColor || '#007bff'}; color: ${block.textColor || '#ffffff'};">
-              ${block.text || 'Click Here'}
-            </a>
+          <div class="button-block block" style="text-align: ${block.content?.align || 'center'}; ${stylesStr}">
+            <a href="${href}" class="button" style="background-color: ${bg}; color: ${color};">${text}</a>
           </div>
         `;
         break;
-      
-      case 'divider':
+      }
+      case 'divider': {
+        const color = block.content?.color || block.color || '#e0e0e0';
+        const height = block.content?.height || block.height || 1;
         html += `
           <div class="divider-block block">
-            <div class="divider" style="background-color: ${block.color || '#e0e0e0'}; height: ${block.height || 1}px;"></div>
+            <div class="divider" style="background-color: ${color}; height: ${height}px;"></div>
           </div>
         `;
         break;
-      
-      case 'spacer':
-        html += `
-          <div class="spacer-block" style="height: ${block.height || 20}px;"></div>
-        `;
+      }
+      case 'spacer': {
+        const height = block.content?.height || block.height || 20;
+        html += `<div class="spacer-block" style="height: ${height}px;"></div>`;
         break;
-      
-      case 'columns':
+      }
+      case 'social': {
+        const links = block.content?.links || block.links || [];
+        const align = block.content?.align || 'center';
         html += `
-          <div class="columns-block block" style="${block.styles || ''}">
-            <table width="100%" cellpadding="0" cellspacing="0" border="0">
-              <tr>
-                ${block.columns?.map(column => `
-                  <td width="${column.width}" valign="top" style="padding: 0 10px;">
-                    ${column.content || ''}
-                  </td>
-                `).join('') || ''}
-              </tr>
-            </table>
+          <div class="social-block block" style="text-align: ${align}; ${stylesStr}">
+            ${links.map(link => `<a href="${link.url || '#'}" style="display: inline-block; margin: 0 10px; text-decoration: none; font-size: 24px;">🔗</a>`).join('')}
           </div>
         `;
         break;
-      
-      case 'social':
-        html += `
-          <div class="social-block block" style="${block.styles || ''}">
-            ${block.links?.map(link => `
-              <a href="${link.url || '#'}" style="display: inline-block; margin: 0 10px; text-decoration: none; font-size: 24px;">
-                ${link.icon || '🔗'}
-              </a>
-            `).join('') || ''}
-          </div>
-        `;
+      }
+      case 'footer': {
+        const text = block.content?.text || '';
+        const align = block.content?.align || 'center';
+        html += `<div class="block" style="text-align: ${align}; ${stylesStr}">${text}</div>`;
         break;
-      
-      default:
-        html += `<div class="block">${block.content || ''}</div>`;
+      }
+      default: {
+        const content = block.content || '';
+        html += `<div class="block" style="${stylesStr}">${content}</div>`;
+      }
     }
   });
 
@@ -295,17 +275,22 @@ templateSchema.methods.generateHTML = function() {
 
 // Method to generate plain text from structure
 templateSchema.methods.generatePlainText = function() {
-  const { blocks } = this.structure;
+  const { blocks = [] } = this.structure || {};
   let text = '';
   
   blocks.forEach(block => {
     switch (block.type) {
-      case 'text':
-        text += (block.content || '').replace(/<[^>]*>/g, '') + '\n\n';
+      case 'text': {
+        const t = (block.content?.text ?? block.content ?? '').toString();
+        text += t.replace(/<[^>]*>/g, '') + '\n\n';
         break;
-      case 'button':
-        text += `${block.text || 'Click Here'}: ${block.href || '#'}\n\n`;
+      }
+      case 'button': {
+        const label = block.content?.text ?? block.text ?? 'Click Here';
+        const href = block.content?.link ?? block.href ?? '#';
+        text += `${label}: ${href}\n\n`;
         break;
+      }
       case 'divider':
         text += '---\n\n';
         break;
@@ -318,13 +303,27 @@ templateSchema.methods.generatePlainText = function() {
   return text.trim();
 };
 
-// Pre-save middleware to generate HTML and plain text
+// Pre-save middleware to normalize and generate HTML and plain text
 templateSchema.pre('save', function(next) {
-  if (this.isModified('structure')) {
-    this.htmlContent = this.generateHTML();
-    this.plainTextContent = this.generatePlainText();
+  try {
+    if (this.isModified('structure')) {
+      const structure = this.structure || {};
+      const blocks = Array.isArray(structure.blocks) ? structure.blocks : [];
+      // Normalize blocks to have content and styles objects
+      structure.blocks = blocks.map(b => ({
+        ...b,
+        content: b && typeof b.content === 'object' ? b.content : (b?.content ? { text: b.content } : {}),
+        styles: b && typeof b.styles === 'object' ? b.styles : {}
+      }));
+      this.structure = structure;
+
+      this.htmlContent = this.generateHTML();
+      this.plainTextContent = this.generatePlainText();
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 // Static method to get popular templates
@@ -347,5 +346,28 @@ templateSchema.statics.getByCategory = function(category, userId = null) {
   }
   return this.find(query).sort({ 'stats.timesUsed': -1, createdAt: -1 });
 };
+
+// Compliance: ensure templates include a footer with unsubscribe link
+templateSchema.methods.hasFooterAndUnsubscribe = function() {
+  try {
+    const blocks = (this.structure && this.structure.blocks) || [];
+    const footer = blocks.find(b => b && b.type === 'footer');
+    if (!footer) return false;
+    const contentText = (footer.content?.text || '').toString();
+    const hasToken = /\{\{\s*unsubscribeUrl\s*\}\}/i.test(contentText);
+    const mentionsUnsub = contentText.toLowerCase().includes('unsubscribe');
+    return hasToken && mentionsUnsub;
+  } catch (e) {
+    return false;
+  }
+};
+
+// Enforce compliance before saving/validating
+templateSchema.pre('validate', function(next) {
+  if (!this.hasFooterAndUnsubscribe || !this.hasFooterAndUnsubscribe()) {
+    return next(new Error('Template must include a footer block containing an unsubscribe link ({{unsubscribeUrl}}).'));
+  }
+  next();
+});
 
 module.exports = mongoose.model('Template', templateSchema);
