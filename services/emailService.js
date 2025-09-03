@@ -1,120 +1,196 @@
-// emailxp/backend/services/emailService.js
+// Unified email service - supports multiple providers
+const smtp2goService = require('./smtp2goService');
 
-const sgMail = require('@sendgrid/mail');
-const { convert } = require('html-to-text');
+class EmailService {
+  constructor() {
+    this.provider = this.detectProvider();
+    console.log(`📧 Email service initialized with provider: ${this.provider}`);
+  }
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-
-// Use the Railway deployment URL as the base for tracking links and pixels
-// This should be set in your Railway environment variables
-const BACKEND_TRACKING_BASE_URL = process.env.BACKEND_URL || 'https://emailxp-backend-production.up.railway.app';
-
-/**
- * @desc Sends an email using SendGrid.
- * Embeds campaign and subscriber IDs directly into tracking URLs and a pixel.
- */
-const sendEmail = async (toEmail, subject, htmlContent, plainTextContent, campaignId, subscriberId, listId) => { // Added listId parameter
-    const log = (...args) => console.log(`[EmailService]`, ...args);
-    const errorLog = (...args) => console.error(`[EmailService]`, ...args);
-    const warnLog = (...args) => console.warn(`[EmailService]`, ...args);
-
-    log(`Attempting to send email to: ${toEmail}, Subject: "${subject}", Campaign: ${campaignId}, Subscriber: ${subscriberId}, List: ${listId}`);
-
-    let finalHtmlContent = htmlContent;
-    let finalPlainTextContent = plainTextContent;
-
-    // --- 1. Process HTML Content for Tracking ---
-    // Inject campaignId and subscriberId into all links (<a> tags) for click tracking
-    if (finalHtmlContent) {
-        log('Injecting tracking parameters into HTML links...');
-        finalHtmlContent = finalHtmlContent.replace(/<a\s+(.*?)href=["']([^"']*)["'](.*?)>/gi, (match, beforeHref, href, afterHref) => {
-            // Ensure href is a valid URL or handle relative paths as needed
-            let newHref = href;
-            const url = new URL(newHref, BACKEND_TRACKING_BASE_URL); // Use base URL for relative paths
-
-            // Append tracking parameters
-            url.searchParams.set('campaignId', campaignId ? campaignId.toString() : '');
-            url.searchParams.set('subscriberId', subscriberId ? subscriberId.toString() : '');
-
-            // Construct a new URL for the click tracking endpoint
-            // This will redirect to the original URL after logging the click
-            const trackingUrl = `${BACKEND_TRACKING_BASE_URL}/api/track/click?campaignId=${campaignId}&subscriberId=${subscriberId}&redirect=${encodeURIComponent(url.toString())}`;
-
-            return `<a ${beforeHref}href="${trackingUrl}"${afterHref}>`;
-        });
-
-        // Inject a 1x1 tracking pixel for open tracking
-        // This pixel will hit our /api/track/open endpoint
-        const trackingPixel = `<img src="${BACKEND_TRACKING_BASE_URL}/api/track/open?campaignId=${campaignId}&subscriberId=${subscriberId}" width="1" height="1" style="display:none !important; border:0; height:1px; width:1px; margin:0; padding:0;">`;
-        finalHtmlContent = finalHtmlContent + trackingPixel;
-        log('Tracking pixel injected for open tracking.');
+  /**
+   * Detect which email provider to use based on configuration
+   */
+  detectProvider() {
+    // Check MailerSend first (great for no domain setup)
+    if (process.env.MAILERSEND_API_KEY) {
+      return 'mailersend';
     }
+    
+    // Check Amazon SES (best free tier)
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+      return 'amazon-ses';
+    }
+    
+    // Check SMTP2GO (good free tier)
+    if (process.env.SMTP2GO_USERNAME && process.env.SMTP2GO_PASSWORD) {
+      return 'smtp2go';
+    }
+    
+    // Check Mailgun
+    if (process.env.MAILGUN_API_KEY && process.env.MAILGUN_DOMAIN) {
+      return 'mailgun';
+    }
+    
+    // Check Resend (existing)
+    if (process.env.RESEND_API_KEY) {
+      return 'resend';
+    }
+    
+    // Check SendGrid (existing)
+    if (process.env.SENDGRID_API_KEY) {
+      return 'sendgrid';
+    }
+    
+    return 'none';
+  }
 
-
-    // --- 2. Process Plain Text Content ---
-    // If plain text is empty, try converting HTML
-    if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
-        log('Plain text content is empty. Attempting to convert HTML to plain text...');
+  /**
+   * Get the appropriate service instance
+   */
+  getService() {
+    switch (this.provider) {
+      case 'mailersend':
+        return require('./mailerSendService');
+      
+      case 'amazon-ses':
+        return require('./amazonSESService');
+      
+      case 'smtp2go':
+        return smtp2goService;
+      
+      case 'mailgun':
         try {
-            // Use html-to-text to convert, ensuring links are handled if needed (though our HTML links redirect now)
-            finalPlainTextContent = convert(finalHtmlContent, {
-                wordwrap: 130,
-                selectors: [
-                    // Skip images including our tracking pixel
-                    { selector: 'img', format: 'skip' },
-                    // Ensure links are formatted correctly in plain text, without exposing redirect details
-                    { selector: 'a', options: { ignoreHref: false, noAnchorUrl: true } } // Keep URL, but not anchor part
-                ]
-            });
-
-            if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
-                warnLog('HTML-to-text conversion yielded empty result. Using fallback.');
-                finalPlainTextContent = subject || 'Email content provided.';
-            }
-        } catch (convertError) {
-            errorLog('Error during HTML-to-text conversion:', convertError);
-            finalPlainTextContent = finalHtmlContent.replace(/<[^>]*>/g, '');
-            if (!finalPlainTextContent || finalPlainTextContent.trim() === '') {
-                warnLog('Fallback plain text also empty. Using default text.');
-                finalPlainTextContent = subject || 'Email content provided.';
-            }
+          return require('./mailgunService');
+        } catch (error) {
+          console.warn('Mailgun service not available, falling back to SMTP2GO');
+          return smtp2goService;
         }
+      
+      case 'resend':
+        // You can implement resend service here if needed
+        throw new Error('Resend service not implemented in unified service');
+      
+      case 'sendgrid':
+        // You can implement sendgrid service here if needed
+        throw new Error('SendGrid service not implemented in unified service');
+      
+      default:
+        throw new Error('No email provider configured. Please configure MailerSend, Amazon SES, SMTP2GO, Mailgun, Resend, or SendGrid');
     }
+  }
 
-    // Construct email message (NO custom_args in the SendGrid payload anymore)
-    const msg = {
-        to: toEmail,
-        from: process.env.SENDGRID_SENDER_EMAIL,
-        subject: subject,
-        html: finalHtmlContent,
-        text: finalPlainTextContent,
-        personalizations: [
-            {
-                to: [{ email: toEmail }]
-            }
-        ]
+  /**
+   * Send single email
+   */
+  async sendEmail(emailData) {
+    const service = this.getService();
+    return await service.sendEmail(emailData);
+  }
+
+  /**
+   * Send bulk emails
+   */
+  async sendBulkEmails(emails, options = {}) {
+    const service = this.getService();
+    
+    if (service.sendBulkEmails) {
+      return await service.sendBulkEmails(emails, options);
+    }
+    
+    // Fallback: send emails one by one
+    const results = [];
+    for (const emailData of emails) {
+      try {
+        const result = await service.sendEmail(emailData);
+        results.push({ success: true, ...result });
+      } catch (error) {
+        results.push({ 
+          success: false, 
+          error: error.message, 
+          to: emailData.to 
+        });
+      }
+    }
+    
+    return {
+      total: emails.length,
+      successful: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length,
+      results
     };
+  }
 
-    log(`Message object prepared for SendGrid (to: ${toEmail}, from: ${msg.from}, subject: ${msg.subject})`);
-
-    if (!msg.text || msg.text.length === 0) {
-        errorLog('Plain text content is still empty before sending! Email not sent.');
-        return { success: false, message: 'Plain text content is empty, cannot send email.' };
+  /**
+   * Validate email
+   */
+  async validateEmail(email) {
+    const service = this.getService();
+    
+    if (service.validateEmail) {
+      return await service.validateEmail(email);
     }
+    
+    // Basic fallback validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return {
+      email,
+      isValid: emailRegex.test(email),
+      provider: this.provider + '-basic'
+    };
+  }
 
+  /**
+   * Test connection
+   */
+  async testConnection() {
+    const service = this.getService();
+    
+    if (service.testConnection) {
+      return await service.testConnection();
+    }
+    
+    // Try sending a test email to verify
     try {
-        await sgMail.send(msg);
-        log(`Email sent successfully to ${toEmail}`);
-        return { success: true, message: 'Email sent' };
+      await service.sendEmail({
+        to: 'test@example.com',
+        subject: 'Connection Test',
+        html: '<p>Test email</p>',
+        campaignType: 'test'
+      });
+      return { success: true, message: `${this.provider} connection verified` };
     } catch (error) {
-        errorLog(`Error sending email to ${toEmail}:`, error);
-        if (error.response) {
-            errorLog(`SendGrid detailed error response:`, JSON.stringify(error.response.body, null, 2));
-        }
-        return { success: false, message: 'Failed to send email', error: error.message };
+      throw new Error(`${this.provider} connection failed: ${error.message}`);
     }
-};
+  }
 
-module.exports = {
-    sendEmail,
-};
+  /**
+   * Get service information
+   */
+  getServiceInfo() {
+    const service = this.getService();
+    
+    if (service.getServiceInfo) {
+      return service.getServiceInfo();
+    }
+    
+    return {
+      provider: this.provider,
+      configured: this.provider !== 'none'
+    };
+  }
+
+  /**
+   * Get account statistics
+   */
+  async getAccountStats() {
+    const service = this.getService();
+    
+    if (service.getAccountStats) {
+      return await service.getAccountStats();
+    }
+    
+    return { error: 'Statistics not available for this provider' };
+  }
+}
+
+module.exports = new EmailService();

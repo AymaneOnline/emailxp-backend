@@ -46,9 +46,13 @@ exports.trackOpen = async (req, res) => {
         });
         logger.log(`[Tracking] OpenEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
 
-        // You might still want to update the lastActivity on the campaign for overall recency
+        // Increment campaign open counter and update lastActivity
         if (campaign) {
-             await Campaign.findByIdAndUpdate(campaignId, { $set: { lastActivity: new Date() } });
+            await Campaign.findByIdAndUpdate(
+                campaignId,
+                { $inc: { opens: 1 }, $set: { lastActivity: new Date() } },
+                { new: false }
+            );
         }
 
 
@@ -112,9 +116,13 @@ exports.trackClick = async (req, res) => {
         });
         logger.log(`[Tracking] ClickEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
 
-        // You might still want to update the lastActivity on the campaign for overall recency
+        // Increment campaign click counter and update lastActivity
         if (campaign) {
-            await Campaign.findByIdAndUpdate(campaignId, { $set: { lastActivity: new Date() } });
+            await Campaign.findByIdAndUpdate(
+                campaignId,
+                { $inc: { clicks: 1 }, $set: { lastActivity: new Date() } },
+                { new: false }
+            );
         }
 
         // Redirect to the original URL
@@ -141,36 +149,29 @@ exports.trackClick = async (req, res) => {
 exports.unsubscribe = async (req, res) => {
     const { subscriberId } = req.params;
     const { campaignId } = req.query; // campaignId would be from the URL params now
-
     logger.log(`[Unsubscribe] Attempting to unsubscribe subscriber ID: ${subscriberId} from campaign ID: ${campaignId || 'N/A'}`);
-
     try {
         // Validate subscriber ID format
         if (!isValidObjectId(subscriberId)) {
             logger.warn(`[Unsubscribe] Invalid subscriber ID format: ${subscriberId}`);
-            return res.status(400).json({ error: 'Invalid subscriber ID format' });
+            return res.status(400).send('<h2>Invalid unsubscribe link.</h2>');
         }
-
         // Find subscriber
         const subscriber = await Subscriber.findById(subscriberId);
         if (!subscriber) {
             logger.warn(`[Unsubscribe] Subscriber with ID ${subscriberId} not found`);
-            return res.status(404).json({ error: 'Subscriber not found' });
+            return res.status(404).send('<h2>Subscriber not found.</h2>');
         }
-
         // Check if already unsubscribed
         if (subscriber.status === 'unsubscribed') {
             logger.log(`[Unsubscribe] Subscriber ${subscriberId} already unsubscribed`);
-            return res.status(200).json({ message: 'You have already unsubscribed' });
+            return res.status(200).send('<h2>You have already unsubscribed.</h2><p>If this was a mistake, please contact support.</p><a href="/privacy-policy" target="_blank">Privacy Policy</a>');
         }
-
         // Update subscriber status
         subscriber.status = 'unsubscribed';
         subscriber.unsubscribedAt = new Date();
         await subscriber.save();
-        
         logger.log(`[Unsubscribe] Subscriber ${subscriberId} successfully unsubscribed`);
-
         // Update campaign unsubscribe count if campaign ID provided
         if (campaignId && isValidObjectId(campaignId)) {
             const campaign = await Campaign.findById(campaignId);
@@ -187,12 +188,10 @@ exports.unsubscribe = async (req, res) => {
                 logger.warn(`[Unsubscribe] Campaign ${campaignId} not found for unsubscribe tracking`);
             }
         }
-
-        res.status(200).json({ message: 'You have successfully unsubscribed' });
-
+        res.status(200).send('<h2>You have been unsubscribed.</h2><p>You will no longer receive emails from us. If this was a mistake, please contact support.</p><a href="/privacy-policy" target="_blank">Privacy Policy</a>');
     } catch (error) {
         logger.error(`[Unsubscribe Error] Failed to unsubscribe subscriber ${subscriberId}:`, error);
-        res.status(500).json({ error: 'An error occurred during unsubscribe' });
+        res.status(500).send('<h2>An error occurred during unsubscribe. Please try again later.</h2>');
     }
 };
 

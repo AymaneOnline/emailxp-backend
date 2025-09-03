@@ -1,0 +1,386 @@
+// emailxp/backend/utils/emailService.js
+
+const nodemailer = require('nodemailer');
+const EmailTracking = require('../models/EmailTracking');
+
+class EmailService {
+  constructor() {
+    this.transporter = null;
+    this.initializeTransporter();
+  }
+
+  initializeTransporter() {
+    // Configure based on environment
+    if (process.env.NODE_ENV === 'production') {
+      // Production email service (e.g., SendGrid, AWS SES, etc.)
+      this.transporter = nodemailer.createTransport({
+        service: process.env.EMAIL_SERVICE || 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS
+        }
+      });
+    } else {
+      // Development - use Ethereal Email for testing
+      this.createTestAccount();
+    }
+  }
+
+  async createTestAccount() {
+    try {
+      const testAccount = await nodemailer.createTestAccount();
+      
+      this.transporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass
+        }
+      });
+
+      console.log('Test email account created:', testAccount.user);
+    } catch (error) {
+      console.error('Error creating test email account:', error);
+    }
+  }
+
+  async sendEmail(emailData) {
+    try {
+      const {
+        to,
+        subject,
+        html,
+        text,
+        from,
+        campaignId,
+        subscriberId,
+        organizationId
+      } = emailData;
+
+      // Generate unique message ID for tracking
+      const messageId = this.generateMessageId();
+
+      // Add tracking pixel to HTML content
+      const htmlWithTracking = this.addTrackingPixel(html, messageId);
+
+      // Add click tracking to links
+      const htmlWithClickTracking = this.addClickTracking(htmlWithTracking, messageId);
+
+      const mailOptions = {
+        from: from || process.env.DEFAULT_FROM_EMAIL || 'noreply@emailxp.com',
+        to,
+        subject,
+        text,
+        html: htmlWithClickTracking,
+        messageId
+      };
+
+      // Send email
+      const result = await this.transporter.sendMail(mailOptions);
+
+      // Create tracking record
+      if (campaignId && subscriberId && organizationId) {
+        await this.createTrackingRecord({
+          campaign: campaignId,
+          subscriber: subscriberId,
+          organization: organizationId,
+          emailAddress: to,
+          subject,
+          messageId,
+          status: 'sent'
+        });
+      }
+
+      // Log preview URL for development
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('Preview URL:', nodemailer.getTestMessageUrl(result));
+      }
+
+      return {
+        success: true,
+        messageId: result.messageId,
+        previewUrl: process.env.NODE_ENV !== 'production' ? nodemailer.getTestMessageUrl(result) : null
+      };
+
+    } catch (error) {
+      console.error('Error sending email:', error);
+      
+      // Record failed send if tracking info is available
+      if (emailData.campaignId && emailData.subscriberId && emailData.organizationId) {
+        await this.createTrackingRecord({
+          campaign: emailData.campaignId,
+          subscriber: emailData.subscriberId,
+          organization: emailData.organizationId,
+          emailAddress: emailData.to,
+          subject: emailData.subject,
+          messageId: this.generateMessageId(),
+          status: 'failed'
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  async sendBulkEmails(emailsData) {
+    const results = [];
+    
+    for (const emailData of emailsData) {
+      try {
+        const result = await this.sendEmail(emailData);
+        results.push({ ...result, email: emailData.to });
+        
+        // Add small delay to avoid rate limiting
+        await this.delay(100);
+      } catch (error) {
+        results.push({
+          success: false,
+          email: emailData.to,
+          error: error.message
+        });
+      }
+    }
+
+    return results;
+  }
+
+  generateMessageId() {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}@emailxp.com`;
+  }
+
+  addTrackingPixel(html, messageId) {
+    if (!html) return html;
+
+    const trackingPixel = `<img src="${process.env.FRONTEND_URL || 'http://localhost:3000'}/api/track/open/${messageId}" width="1" height="1" style="display:none;" alt="" />`;
+    
+    // Try to insert before closing body tag, otherwise append
+    if (html.includes('</body>')) {
+      return html.replace('</body>', `${trackingPixel}</body>`);
+    } else {
+      return html + trackingPixel;
+    }
+  }
+
+  addClickTracking(html, messageId) {
+    if (!html) return html;
+
+    // Replace all links with tracking links
+    const linkRegex = /<a\s+(?:[^>]*?\s+)?href=(["'])(.*?)\1/gi;
+    
+    return html.replace(linkRegex, (match, quote, url) => {
+      // Skip if already a tracking link or mailto/tel links
+      if (url.includes('/api/track/click/') || url.startsWith('mailto:') || url.startsWith('tel:')) {
+        return match;
+      }
+
+      const trackingUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/api/track/click/${messageId}?url=${encodeURIComponent(url)}`;
+      return match.replace(url, trackingUrl);
+    });
+  }
+
+  async createTrackingRecord(trackingData) {
+    try {
+      const tracking = new EmailTracking(trackingData);
+      await tracking.save();
+      return tracking;
+    } catch (error) {
+      console.error('Error creating tracking record:', error);
+      throw error;
+    }
+  }
+
+  async recordOpen(messageId, openData = {}) {
+    try {
+      const tracking = await EmailTracking.findOne({ messageId });
+      if (tracking) {
+        await tracking.recordOpen(openData);
+        return tracking;
+      }
+    } catch (error) {
+      console.error('Error recording email open:', error);
+    }
+  }
+
+  async recordClick(messageId, clickData = {}) {
+    try {
+      const tracking = await EmailTracking.findOne({ messageId });
+      if (tracking) {
+        await tracking.recordClick(clickData);
+        return tracking;
+      }
+    } catch (error) {
+      console.error('Error recording email click:', error);
+    }
+  }
+
+  async recordBounce(messageId, bounceData = {}) {
+    try {
+      const tracking = await EmailTracking.findOne({ messageId });
+      if (tracking) {
+        await tracking.recordBounce(bounceData);
+        return tracking;
+      }
+    } catch (error) {
+      console.error('Error recording email bounce:', error);
+    }
+  }
+
+  async recordUnsubscribe(messageId) {
+    try {
+      const tracking = await EmailTracking.findOne({ messageId });
+      if (tracking) {
+        await tracking.recordUnsubscribe();
+        return tracking;
+      }
+    } catch (error) {
+      console.error('Error recording unsubscribe:', error);
+    }
+  }
+
+  // Template email methods
+  async sendWelcomeEmail(userEmail, userName) {
+    const emailData = {
+      to: userEmail,
+      subject: 'Welcome to EmailXP!',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h1 style="color: #dc2626;">Welcome to EmailXP, ${userName}!</h1>
+          <p>Thank you for joining EmailXP. We're excited to help you create amazing email campaigns.</p>
+          <p>Get started by:</p>
+          <ul>
+            <li>Creating your first email template</li>
+            <li>Importing your subscriber list</li>
+            <li>Launching your first campaign</li>
+          </ul>
+          <p>If you have any questions, don't hesitate to reach out to our support team.</p>
+          <p>Best regards,<br>The EmailXP Team</p>
+        </div>
+      `,
+      text: `Welcome to EmailXP, ${userName}! Thank you for joining us. Get started by creating your first template, importing subscribers, and launching campaigns.`
+    };
+
+    return this.sendEmail(emailData);
+  }
+
+  async sendPasswordResetEmail(userEmail, resetToken) {
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+    
+    const emailData = {
+      to: userEmail,
+      subject: 'Password Reset Request',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h1 style="color: #dc2626;">Password Reset Request</h1>
+          <p>You requested a password reset for your EmailXP account.</p>
+          <p>Click the button below to reset your password:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${resetUrl}" style="background-color: #dc2626; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a>
+          </div>
+          <p>If you didn't request this reset, please ignore this email.</p>
+          <p>This link will expire in 1 hour.</p>
+          <p>Best regards,<br>The EmailXP Team</p>
+        </div>
+      `,
+      text: `Password reset requested. Visit: ${resetUrl} (expires in 1 hour)`
+    };
+
+    return this.sendEmail(emailData);
+  }
+
+  async sendVerificationEmail(userEmail, verificationToken) {
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+    
+    const emailData = {
+      to: userEmail,
+      subject: 'Verify Your Email Address',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h1 style="color: #dc2626;">Verify Your Email Address</h1>
+          <p>Please verify your email address to complete your EmailXP registration.</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${verificationUrl}" style="background-color: #dc2626; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Verify Email</a>
+          </div>
+          <p>If you didn't create this account, please ignore this email.</p>
+          <p>Best regards,<br>The EmailXP Team</p>
+        </div>
+      `,
+      text: `Please verify your email address: ${verificationUrl}`
+    };
+
+    return this.sendEmail(emailData);
+  }
+
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Webhook handlers for email service providers
+  async handleWebhook(provider, payload) {
+    try {
+      switch (provider) {
+        case 'sendgrid':
+          return this.handleSendGridWebhook(payload);
+        case 'mailgun':
+          return this.handleMailgunWebhook(payload);
+        case 'ses':
+          return this.handleSESWebhook(payload);
+        default:
+          console.log('Unknown webhook provider:', provider);
+      }
+    } catch (error) {
+      console.error('Error handling webhook:', error);
+    }
+  }
+
+  async handleSendGridWebhook(events) {
+    for (const event of events) {
+      const messageId = event.sg_message_id;
+      
+      switch (event.event) {
+        case 'delivered':
+          await this.updateTrackingStatus(messageId, 'delivered');
+          break;
+        case 'open':
+          await this.recordOpen(messageId, {
+            userAgent: event.useragent,
+            ipAddress: event.ip
+          });
+          break;
+        case 'click':
+          await this.recordClick(messageId, {
+            url: event.url,
+            userAgent: event.useragent,
+            ipAddress: event.ip
+          });
+          break;
+        case 'bounce':
+          await this.recordBounce(messageId, {
+            type: event.type,
+            reason: event.reason
+          });
+          break;
+        case 'unsubscribe':
+          await this.recordUnsubscribe(messageId);
+          break;
+      }
+    }
+  }
+
+  async updateTrackingStatus(messageId, status) {
+    try {
+      await EmailTracking.findOneAndUpdate(
+        { messageId },
+        { 
+          status,
+          deliveredAt: status === 'delivered' ? new Date() : undefined
+        }
+      );
+    } catch (error) {
+      console.error('Error updating tracking status:', error);
+    }
+  }
+}
+
+module.exports = new EmailService();
