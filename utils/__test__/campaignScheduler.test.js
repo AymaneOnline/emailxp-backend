@@ -27,7 +27,7 @@ afterAll(() => {
 });
 
 describe('executeSendCampaign', () => {
-  // Mock campaign and list data - define a base structure
+  // Mock campaign and group data - define a base structure
   const mockCampaignId = 'mockCampaignId';
   const mockListId = 'mockListId';
 
@@ -37,7 +37,7 @@ describe('executeSendCampaign', () => {
     subject: 'Hello from Test Campaign',
     htmlContent: '<p>Hi {{name}}</p>',
     plainTextContent: 'Hi {{name}}',
-    list: { _id: mockListId, name: 'Test List' },
+    group: { _id: mockGroupId, name: 'Test Group' },
     status: 'scheduled',
     // Do NOT include save here. It will be added to the deep copy.
   };
@@ -73,8 +73,8 @@ describe('executeSendCampaign', () => {
     const result = await executeSendCampaign(mockCampaignId);
 
     expect(Campaign.findById).toHaveBeenCalledWith(mockCampaignId);
-    expect(Campaign.findById().populate).toHaveBeenCalledWith('list');
-    expect(Subscriber.find).toHaveBeenCalledWith({ list: mockListId, status: 'subscribed' });
+    expect(Campaign.findById().populate).toHaveBeenCalledWith('group');
+    expect(Subscriber.find).toHaveBeenCalledWith({ group: mockGroupId, status: 'subscribed' });
     expect(sendEmail).toHaveBeenCalledTimes(2); // Called for each subscriber
     expect(sendEmail).toHaveBeenCalledWith(
       'alice@example.com',
@@ -120,7 +120,7 @@ describe('executeSendCampaign', () => {
 
     const result = await executeSendCampaign(mockCampaignId);
 
-    expect(Subscriber.find).toHaveBeenCalledWith({ list: mockListId, status: 'subscribed' });
+    expect(Subscriber.find).toHaveBeenCalledWith({ group: mockGroupId, status: 'subscribed' });
     expect(result.success).toBe(true); // Should still be true if no active subscribers to send to
     expect(result.message).toBe('No active subscribers found for this campaign. Campaign marked as sent.');
     expect(sendEmail).not.toHaveBeenCalled(); // No emails should be sent
@@ -206,7 +206,7 @@ describe('executeSendCampaign', () => {
 
     // This assertion now correctly expects that the Subscriber.find method was called
     // with the filter for 'subscribed' status.
-    expect(Subscriber.find).toHaveBeenCalledWith({ list: mockListId, status: 'subscribed' });
+    expect(Subscriber.find).toHaveBeenCalledWith({ group: mockGroupId, status: 'subscribed' });
     expect(sendEmail).toHaveBeenCalledTimes(1); // Should only be called for mockSubscriber1 (Alice)
     expect(sendEmail).toHaveBeenCalledWith(
       'alice@example.com',

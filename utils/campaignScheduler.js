@@ -23,9 +23,13 @@ const logger = {
 
 const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
-const List = require('../models/List'); // Ensure List model is imported if you need list details
+const Group = require('../models/Group'); // Ensure Group model is imported if you need group details
 const Subscriber = require('../models/Subscriber');
+const Segment = require('../models/Segment');
 const { sendEmail } = require('../services/emailService');
+const { addEmailJob: addEmailJobLegacy } = require('./emailQueue');
+const { addEmailJob, addCampaignBatchJob } = require('../services/queueService');
+const { groupSubscribersByTimezone, calculateSendTime, getDefaultTimezone } = require('./timezoneService');
 // Removed cheerio as it's no longer directly used for tracking content modification here.
 // If you use cheerio for other purposes in this file, keep it.
 // const cheerio = require('cheerio'); // You can remove this line if it's not used elsewhere.
@@ -50,7 +54,7 @@ const executeSendCampaign = async (campaignId) => {
     logger.log(`[Scheduler] Attempting to execute send for campaign ID: ${campaignId}`);
 
     try {
-        campaign = await Campaign.findById(campaignId).populate('list');
+        campaign = await Campaign.findById(campaignId).populate('group');
 
         if (!campaign) {
             logger.error(`[Scheduler Error] Campaign with ID ${campaignId} not found.`);
@@ -69,107 +73,162 @@ const executeSendCampaign = async (campaignId) => {
         campaign.status = 'sending';
         await campaign.save();
 
-        const subscribers = await Subscriber.find({
-            list: campaign.list._id,
-            status: 'subscribed'
-        });
+        // Build recipient query from groups, segments, and individual subscribers
+        const selectedGroupIds = (Array.isArray(campaign.groups) && campaign.groups.length > 0)
+            ? campaign.groups
+            : [campaign.group && campaign.group._id ? campaign.group._id : campaign.group].filter(Boolean);
+        const primaryGroupId = selectedGroupIds[0] || null;
+        const individualIds = Array.isArray(campaign.individualSubscribers) ? campaign.individualSubscribers : [];
+        const segmentIds = Array.isArray(campaign.segments) ? campaign.segments : [];
 
-        if (subscribers.length === 0) {
-            logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) has no 'subscribed' members in list ${campaign.list.name}.`);
-            campaign.status = 'sent';
-            campaign.sentAt = new Date();
-            campaign.emailsSuccessfullySent = 0; // Set to 0 if no subscribers to send to
-            await campaign.save();
-            return { success: true, message: 'No active subscribers found for this campaign. Campaign marked as sent.', successfulSends: 0 };
+        // Load segments to translate their filters into query clauses
+        const segments = segmentIds.length > 0
+            ? await Segment.find({ _id: { $in: segmentIds }, user: campaign.user })
+            : [];
+
+        // Build $or sub-clauses
+        const orClauses = [];
+        if (selectedGroupIds.length > 0) {
+            orClauses.push({ groups: { $in: selectedGroupIds } });
         }
-
-        logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} active subscribers.`);
-
-        try {
-            const sendPromises = subscribers.map(async (subscriber) => {
-                let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                let personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-
-                const unsubscribeUrl = `${BACKEND_URL}/api/track/unsubscribe/${subscriber._id}?campaignId=${campaign._id}`;
-
-                // Append unsubscribe link to HTML and plain text.
-                // SendGrid's native tracking will handle open/click tracking.
-                personalizedHtml = `${personalizedHtml}<p style="text-align:center; font-size:10px; color:#aaa; margin-top:30px;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}" style="color:#aaa;">unsubscribe here</a>.</p>`;
-                personalizedPlain = `${personalizedPlain}\n\n---\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
-
-                logger.log(`[Scheduler] Prepare to call sendEmail for subscriber: ${subscriber.email}`);
-
-                // --- UPDATED sendEmail call to include listId ---
-                const result = await sendEmail(
-                    subscriber.email,
-                    personalizedSubject,
-                    personalizedHtml,
-                    personalizedPlain,
-                    campaign._id,
-                    subscriber._id,
-                    campaign.list._id // Pass the list ID here
-                );
-                // --- END UPDATED sendEmail call ---
-
-                logger.log(`[Scheduler] sendEmail for ${subscriber.email} returned:`, result);
-                return result;
-            });
-
-            const results = await Promise.allSettled(sendPromises);
-
-            results.forEach(outcome => {
-                if (outcome.status === 'fulfilled') {
-                    if (outcome.value && outcome.value.success) {
-                        successfulSends++;
-                    } else {
-                        failedSends++;
-                        const errorMsg = outcome.value && outcome.value.message ? outcome.value.message : 'Unknown failure';
-                        const errorObj = outcome.value && outcome.value.error ? outcome.value.error : 'No detailed error object from sendEmail';
-                        logger.error(`[Scheduler] Email send fulfilled but failed for a subscriber. Message: ${errorMsg}. Error:`, errorObj);
-                    }
-                } else if (outcome.status === 'rejected') {
-                    failedSends++;
-                    logger.error(`[Scheduler] Email send promise rejected for a subscriber. Reason:`, outcome.reason);
-                }
-            });
-
-            campaign.status = successfulSends > 0 ? 'sent' : 'failed';
-            campaign.sentAt = new Date();
-            campaign.emailsSuccessfullySent = successfulSends;
-            await campaign.save();
-
-            logger.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
-            return { success: successfulSends > 0, message: 'Campaign sending completed.', totalSubscribers: subscribers.length, successfulSends, failedSends };
-
-        } catch (innerSendingError) {
-            logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
-            campaign.status = 'failed';
-            campaign.emailsSuccessfullySent = successfulSends;
-            await campaign.save();
-            logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
-            return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
+        if (individualIds.length > 0) {
+            orClauses.push({ _id: { $in: individualIds } });
         }
-
-    } catch (outerCriticalError) {
-        logger.error(`[Scheduler] Critical error during executeSendCampaign for ID ${campaignId}:`, outerCriticalError);
-
-        if (campaignId) {
-            try {
-                if (campaign) {
-                    campaign.status = 'failed';
-                    campaign.emailsSuccessfullySent = successfulSends;
-                    await campaign.save();
-                } else {
-                    await Campaign.findByIdAndUpdate(campaignId, { status: 'failed' });
-                }
-                logger.log(`[Scheduler] Campaign ${campaignId} status updated to 'failed' due to critical error.`);
-            } catch (updateError) {
-                logger.error(`[Scheduler] Failed to update campaign status to 'failed' after critical error for ID ${campaignId}:`, updateError);
+        for (const segment of segments) {
+            const segmentQuery = segment.buildQuery();
+            if (Object.keys(segmentQuery).length > 0) {
+                orClauses.push(segmentQuery);
             }
         }
 
-        return { success: false, message: `An unexpected critical error occurred: ${outerCriticalError.message}` };
+        // Validate at least one category selected
+        if (orClauses.length === 0) {
+            logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) has no recipient categories selected.`);
+            campaign.status = 'draft';
+            campaign.totalRecipients = 0;
+            await campaign.save();
+            return { success: false, message: 'No recipients selected. Please choose groups, segments, or subscribers before sending.' };
+        }
+
+        // Final query applying base conditions to all recipients
+        const finalQuery = {
+            user: campaign.user,
+            status: 'subscribed',
+            isDeleted: false,
+            $or: orClauses
+        };
+
+        const totalRecipients = await Subscriber.countDocuments(finalQuery);
+        campaign.totalRecipients = totalRecipients;
+        await campaign.save();
+
+        if (totalRecipients === 0) {
+            logger.warn(`[Scheduler] Campaign ${campaign.name} (ID: ${campaign._id}) resolved 0 recipients.`);
+            campaign.status = 'draft';
+            campaign.sentAt = null;
+            campaign.emailsSuccessfullySent = 0;
+            await campaign.save();
+            return { success: false, message: 'No active subscribers matched the selection. Sending aborted.', successfulSends: 0 };
+        }
+
+        // Fetch recipients (projection to reduce memory)
+        const subscribers = await Subscriber.find(finalQuery).select('_id email name').lean();
+        logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} active subscribers.`);
+
+        logger.log(`[Scheduler] Initiating send for campaign: "${campaign.name}" (ID: ${campaign._id}) to ${subscribers.length} active subscribers.`);
+
+        // Check if this is subscriber-local timezone scheduling
+        const isSubscriberLocal = campaign.scheduleType === 'subscriber_local';
+        
+        if (isSubscriberLocal) {
+            // Group subscribers by timezone and queue batches
+            const timezoneGroups = groupSubscribersByTimezone(subscribers);
+            logger.log(`[Scheduler] Subscriber-local scheduling: ${timezoneGroups.size} timezone groups`);
+            
+            for (const [timezone, timezoneSubscribers] of timezoneGroups) {
+                const sendTime = calculateSendTime(
+                    campaign.scheduledAt || new Date(),
+                    timezone,
+                    campaign.scheduleTimezone || 'UTC'
+                );
+                
+                // Prepare batch data
+                const batchData = {
+                    campaignId: campaign._id,
+                    subscribers: timezoneSubscribers,
+                    timezone,
+                    subject: campaign.subject,
+                    htmlContent: campaign.htmlContent,
+                    plainTextContent: campaign.plainTextContent,
+                    groupId: primaryGroupId,
+                    fromEmail: campaign.fromEmail,
+                    fromName: campaign.fromName,
+                };
+                
+                // Calculate delay for this timezone
+                const delay = Math.max(0, sendTime.getTime() - Date.now());
+                
+                try {
+                    await addCampaignBatchJob(batchData, { delay });
+                    logger.log(`[Scheduler] Queued batch for timezone ${timezone}: ${timezoneSubscribers.length} subscribers, delay: ${delay}ms`);
+                } catch (error) {
+                    logger.error(`[Scheduler] Failed to queue batch for timezone ${timezone}:`, error);
+                    failedSends += timezoneSubscribers.length;
+                }
+            }
+            
+            successfulSends = subscribers.length - failedSends;
+        } else {
+            // Standard immediate sending - use Redis queue for better reliability
+            const emailJobs = subscribers.map(subscriber => {
+                let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                let personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                
+                return {
+                    toEmail: subscriber.email,
+                    subject: personalizedSubject,
+                    htmlContent: personalizedHtml,
+                    plainTextContent: personalizedPlain,
+                    campaignId: campaign._id,
+                    subscriberId: subscriber._id,
+                    groupId: primaryGroupId,
+                    fromEmail: campaign.fromEmail,
+                    fromName: campaign.fromName,
+                };
+            });
+            
+            // Queue all email jobs
+            const sendResults = await Promise.allSettled(
+                emailJobs.map(emailData => addEmailJob(emailData))
+            );
+            
+            // Count successful queuing (not actual sending)
+            sendResults.forEach(result => {
+                if (result.status === 'fulfilled') {
+                    successfulSends++;
+                } else {
+                    failedSends++;
+                    logger.error(`[Scheduler] Failed to queue email:`, result.reason);
+                }
+            });
+        }
+
+        campaign.status = successfulSends > 0 ? 'sent' : 'failed';
+        campaign.sentAt = new Date();
+        campaign.emailsSuccessfullySent = successfulSends;
+        await campaign.save();
+
+        logger.log(`[Scheduler] Campaign "${campaign.name}" (ID: ${campaign._id}) sending completed. Sent: ${successfulSends}, Failed: ${failedSends}`);
+        return { success: successfulSends > 0, message: 'Campaign sending completed.', totalSubscribers: subscribers.length, successfulSends, failedSends };
+
+    } catch (innerSendingError) {
+        logger.error(`[Scheduler] ERROR within sendPromises processing for campaign ID ${campaignId}:`, innerSendingError);
+        campaign.status = 'failed';
+        campaign.emailsSuccessfullySent = successfulSends;
+        await campaign.save();
+        logger.log(`[Scheduler] Campaign ${campaignId} status set to 'failed' due to inner sending error.`);
+        return { success: false, message: `Error during email sending phase: ${innerSendingError.message}` };
     }
 };
 

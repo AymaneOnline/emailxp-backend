@@ -1,38 +1,52 @@
+// emailxp/backend/middleware/authMiddleware.js
+
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
 
 const protect = asyncHandler(async (req, res, next) => {
-    let token;
+  let token;
 
-    // Check if Authorization header exists and starts with 'Bearer'
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            // Get token from header
-            token = req.headers.authorization.split(' ')[1]; // Format: Bearer TOKEN
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      // Get token from header
+      token = req.headers.authorization.split(' ')[1];
 
-            // Verify token
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Verify token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-            // Get user from the token's payload (id)
-            req.user = await User.findById(decoded.id).select('-password'); // Exclude password from the user object
-            if (!req.user) {
-                res.status(401);
-                throw new Error('Not authorized, user not found');
-            }
+      // Get user from the token (excluding password)
+      const user = await User.findById(decoded.id).select('-password');
 
-            next(); // Proceed to the next middleware/route handler
-        } catch (error) {
-            console.error(error);
-            res.status(401);
-            throw new Error('Not authorized, token failed');
-        }
-    }
-
-    if (!token) {
+      if (!user) {
         res.status(401);
-        throw new Error('Not authorized, no token');
+        throw new Error('Not authorized, user not found');
+      }
+
+      req.user = user; // Attach user to the request object
+
+      // Check if user is verified
+      // Whitelist the profile and verification email endpoints for unverified users.
+      const isVerificationRoute = req.originalUrl.startsWith('/api/users/send-verification-email') || req.originalUrl.startsWith('/users/send-verification-email');
+      const isProfileRoute = req.originalUrl.startsWith('/api/users/profile') || req.originalUrl.startsWith('/users/profile');
+
+      if (!user.isVerified && !(isVerificationRoute || isProfileRoute)) {
+        res.status(403); // Forbidden
+        return next(new Error('Email not verified. Please verify your email to access this feature.'));
+      }
+
+      next();
+    } catch (error) {
+      console.error('Authentication error in protect middleware:', error);
+      res.status(401);
+      throw new Error('Not authorized, token failed');
     }
+  }
+
+  if (!token) {
+    res.status(401);
+    throw new Error('Not authorized, no token');
+  }
 });
 
 module.exports = { protect };

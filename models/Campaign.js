@@ -9,11 +9,32 @@ const campaignSchema = mongoose.Schema(
             required: true,
             ref: 'User',
         },
-        list: {
+        group: {
             type: mongoose.Schema.Types.ObjectId,
-            required: true,
-            ref: 'List',
+            required: false,
+            ref: 'Group',
         },
+        // Optional: support multiple groups (MailerLite-style audience selection)
+        groups: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Group',
+            }
+        ],
+        // New: allow selecting predefined segments
+        segments: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Segment',
+            }
+        ],
+        // New: allow selecting individual subscribers directly
+        individualSubscribers: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Subscriber',
+            }
+        ],
         name: {
             type: String,
             required: [true, 'Please add a campaign name'],
@@ -23,6 +44,17 @@ const campaignSchema = mongoose.Schema(
             type: String,
             required: [true, 'Please add a subject'],
             trim: true,
+        },
+        // Store sender identity if customized per campaign
+        fromEmail: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+        fromName: {
+            type: String,
+            trim: true,
+            default: null,
         },
         htmlContent: {
             type: String,
@@ -41,6 +73,25 @@ const campaignSchema = mongoose.Schema(
             type: Date,
             default: null,
         },
+        // Scheduling options
+        scheduleType: {
+            type: String,
+            enum: ['fixed', 'subscriber_local'],
+            default: 'fixed',
+        },
+        scheduleTimezone: {
+            type: String,
+            default: null,
+        },
+        // For subscriber-local scheduling, create per-timezone dispatches
+        scheduledDispatches: [
+            {
+                timezone: { type: String, required: true },
+                scheduledAtUtc: { type: Date, required: true },
+                sent: { type: Boolean, default: false },
+                sentAt: { type: Date, default: null }
+            }
+        ],
         sentAt: {
             type: Date,
             default: null, // This will be updated by sendCampaignManually
@@ -79,6 +130,33 @@ const campaignSchema = mongoose.Schema(
         totalRecipients: { // To store the count of subscribers targetted by the campaign send
             type: Number,
             default: 0,
+        },
+        
+        // Email queue information
+        totalEmails: { type: Number, default: 0 },
+        emailsQueued: { type: Number, default: 0 },
+        emailsProcessed: { type: Number, default: 0 },
+        
+        // Job tracking for Bull queue
+        jobId: String,
+        
+        // Enhanced timing
+        startedAt: Date,
+        completedAt: Date,
+        
+        // Error tracking
+        error: String,
+        
+        // Enhanced stats (keeping existing fields for compatibility)
+        stats: {
+            sent: { type: Number, default: 0 },
+            delivered: { type: Number, default: 0 },
+            opened: { type: Number, default: 0 },
+            clicked: { type: Number, default: 0 },
+            bounced: { type: Number, default: 0 },
+            complained: { type: Number, default: 0 },
+            unsubscribed: { type: Number, default: 0 },
+            failed: { type: Number, default: 0 }
         },
         // --- End of tracking fields ---
     },
