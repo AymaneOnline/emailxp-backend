@@ -46,8 +46,14 @@ exports.trackOpen = async (req, res) => {
         });
         logger.log(`[Tracking] OpenEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
 
-        // Increment campaign open counter and update lastActivity
-        if (campaign) {
+        // Check if this is the first open for this subscriber-campaign combination
+        const existingOpen = await OpenEvent.findOne({
+            campaign: campaignId,
+            subscriber: subscriberId
+        });
+
+        // Only increment campaign open counter if this is the first open
+        if (campaign && !existingOpen) {
             await Campaign.findByIdAndUpdate(
                 campaignId,
                 { $inc: { opens: 1 }, $set: { lastActivity: new Date() } },
@@ -116,8 +122,14 @@ exports.trackClick = async (req, res) => {
         });
         logger.log(`[Tracking] ClickEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
 
-        // Increment campaign click counter and update lastActivity
-        if (campaign) {
+        // Check if this is the first click for this subscriber-campaign combination
+        const existingClick = await ClickEvent.findOne({
+            campaign: campaignId,
+            subscriber: subscriberId
+        });
+
+        // Only increment campaign click counter if this is the first click
+        if (campaign && !existingClick) {
             await Campaign.findByIdAndUpdate(
                 campaignId,
                 { $inc: { clicks: 1 }, $set: { lastActivity: new Date() } },

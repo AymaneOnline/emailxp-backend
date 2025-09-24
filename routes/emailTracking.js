@@ -30,13 +30,21 @@ router.get('/open/:messageId', async (req, res) => {
       });
       console.log('OpenEvent created for messageId:', messageId);
 
-      // Update campaign open count
-      const Campaign = require('../models/Campaign');
-      console.log('Updating campaign opens for campaign:', tracking.campaign);
-      await Campaign.findByIdAndUpdate(tracking.campaign, {
-        $inc: { opens: 1 }
+      // Check if this is the first open for this subscriber-campaign combination
+      const existingOpen = await OpenEvent.findOne({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber
       });
-      console.log('Campaign opens updated successfully');
+
+      // Update campaign open count only if this is the first open
+      if (!existingOpen) {
+        const Campaign = require('../models/Campaign');
+        console.log('Updating campaign opens for campaign:', tracking.campaign);
+        await Campaign.findByIdAndUpdate(tracking.campaign, {
+          $inc: { opens: 1 }
+        });
+        console.log('Campaign opens updated successfully');
+      }
     } else {
       console.log('No EmailTracking found for messageId:', messageId);
     }
@@ -108,13 +116,21 @@ router.get('/click/:messageId', async (req, res) => {
       });
       console.log('ClickEvent created for messageId:', messageId);
 
-      // Update campaign click count
-      const Campaign = require('../models/Campaign');
-      console.log('Updating campaign clicks for campaign:', tracking.campaign);
-      await Campaign.findByIdAndUpdate(tracking.campaign, {
-        $inc: { clicks: 1 }
+      // Check if this is the first click for this subscriber-campaign combination
+      const existingClick = await ClickEvent.findOne({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber
       });
-      console.log('Campaign clicks updated successfully');
+
+      // Update campaign click count only if this is the first click
+      if (!existingClick) {
+        const Campaign = require('../models/Campaign');
+        console.log('Updating campaign clicks for campaign:', tracking.campaign);
+        await Campaign.findByIdAndUpdate(tracking.campaign, {
+          $inc: { clicks: 1 }
+        });
+        console.log('Campaign clicks updated successfully');
+      }
     } else {
       console.log('No EmailTracking found for messageId:', messageId);
     }
