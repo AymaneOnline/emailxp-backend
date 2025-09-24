@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 const { protect } = require('../middleware/authMiddleware');
 const analyticsService = require('../services/analyticsService');
 const { summary } = require('../services/deliverabilityMetricsService');
@@ -7,7 +8,52 @@ const { summary } = require('../services/deliverabilityMetricsService');
 // Simple in-memory rate limiter (per process) to avoid abuse (basic)
 const clientConnections = new Map();
 
-router.get('/', protect, async (req, res) => {
+// GET /api/stream/token - returns a short-lived token for SSE auth
+router.get('/token', protect, (req, res) => {
+  try {
+    // Create a short-lived token (5 minutes) containing user id
+    const token = jwt.sign(
+      { id: req.user._id, type: 'sse' },
+      process.env.JWT_SECRET,
+      { expiresIn: '5m' }
+    );
+    res.json({ token });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to generate token' });
+  }
+});
+
+router.get('/', async (req, res) => {
+  let user;
+  const token = req.query.token;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.type !== 'sse') throw new Error('Invalid token type');
+      // Get user
+      const User = require('../models/User');
+      user = await User.findById(decoded.id).select('-password');
+      if (!user) throw new Error('User not found');
+    } catch (error) {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+  } else {
+    // Fallback to header auth for backward compatibility
+    if (!req.headers.authorization || !req.headers.authorization.startsWith('Bearer')) {
+      return res.status(401).json({ message: 'No auth provided' });
+    }
+    try {
+      const authToken = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(authToken, process.env.JWT_SECRET);
+      const User = require('../models/User');
+      user = await User.findById(decoded.id).select('-password');
+      if (!user) throw new Error('User not found');
+    } catch (error) {
+      return res.status(401).json({ message: 'Invalid auth' });
+    }
+  }
+
+  req.user = user; // Set for the rest of the handler
   // Basic per-user connection limit (1 active)
   const existing = clientConnections.get(req.user._id.toString());
   if (existing) {
