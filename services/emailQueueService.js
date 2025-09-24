@@ -52,13 +52,15 @@ class EmailQueueService {
         this.useRedis = true;
         console.log('✅ Email queue initialized with Redis');
         
-        // Test job processing
-        setTimeout(() => {
-          console.log('🧪 Testing job processing with a simple test job...');
-          this.emailQueue.add('send-campaign', { campaignId: 'test-campaign-id', test: true })
-            .then(job => console.log(`🧪 Test job added with ID: ${job.id}`))
-            .catch(err => console.error('🧪 Test job failed:', err));
-        }, 2000);
+        // Test job processing (only in non-production environments)
+        if (process.env.NODE_ENV !== 'production') {
+          setTimeout(() => {
+            console.log('🧪 Testing job processing with a simple test job...');
+            this.emailQueue.add('send-campaign', { campaignId: 'test-campaign-id', test: true })
+              .then(job => console.log(`🧪 Test job added with ID: ${job.id}`))
+              .catch(err => console.error('🧪 Test job failed:', err));
+          }, 2000);
+        }
       }).catch((error) => {
         console.warn('⚠️  Redis connection failed, falling back to simple queue:', error.message);
         this.useRedis = false;
@@ -285,7 +287,14 @@ class EmailQueueService {
    */
   async processCampaign(campaignId, parentJob) {
     console.log(`🚀 Starting campaign processing for campaign: ${campaignId}`);
-    
+    const mongoose = require('mongoose');
+
+    // Validate campaignId before querying to avoid CastErrors
+    if (!mongoose.Types.ObjectId.isValid(campaignId)) {
+      console.warn(`Invalid campaignId received, skipping processing: ${campaignId}`);
+      return;
+    }
+
     const campaign = await Campaign.findById(campaignId)
       .populate('template')
       .populate('individualSubscribers')
