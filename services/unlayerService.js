@@ -37,8 +37,20 @@ class UnlayerService {
 
       const response = await this.client.get('/templates', { params });
       
+      // Transform Unlayer templates to match frontend expectations
+      const transformedTemplates = (response.data.data || []).map(template => ({
+        id: template.id,
+        name: template.name,
+        description: template.description || `Unlayer template: ${template.name}`,
+        category: template.category || 'welcome', // Default category if not provided
+        thumbnail: template.thumbnail_url || template.thumbnail,
+        design: template.design,
+        created_at: template.created_at,
+        updated_at: template.updated_at
+      }));
+      
       return {
-        templates: response.data.data || [],
+        templates: transformedTemplates,
         total: response.data.total || 0,
         hasMore: response.data.has_more || false
       };
@@ -56,7 +68,19 @@ class UnlayerService {
       }
 
       const response = await this.client.get(`/templates/${templateId}`);
-      return response.data.data;
+      
+      // Transform single template to match frontend expectations
+      const template = response.data.data;
+      return {
+        id: template.id,
+        name: template.name,
+        description: template.description || `Unlayer template: ${template.name}`,
+        category: template.category || 'welcome',
+        thumbnail: template.thumbnail_url || template.thumbnail,
+        design: template.design,
+        created_at: template.created_at,
+        updated_at: template.updated_at
+      };
     } catch (error) {
       console.error('Error fetching template by ID:', error.message);
       throw new Error(`Failed to fetch template: ${error.message}`);
