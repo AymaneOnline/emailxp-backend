@@ -1,11 +1,24 @@
 // Email queue service using Bull for job processing
 const Queue = require('bull');
-const mailgunService = require('./mailgunService');
+const emailService = require('./emailService');
+const suppressionService = require('./suppressionService');
+const logger = require('../utils/logger');
+const crypto = require('crypto');
 const Campaign = require('../models/Campaign');
 const EmailLog = require('../models/EmailLog');
 
 class EmailQueueService {
   constructor() {
+    // Check if Redis is configured via environment variables
+    const redisConfigured = process.env.REDIS_HOST || process.env.REDIS_URL;
+    
+    if (!redisConfigured) {
+      console.log('📝 Redis not configured, using simple in-memory queue');
+      this.useRedis = false;
+      this.initializeSimpleQueue();
+      return;
+    }
+
     try {
       // Try to create email queue with Redis connection
       this.emailQueue = new Queue('email processing', {
@@ -13,6 +26,10 @@ class EmailQueueService {
           port: process.env.REDIS_PORT || 6379,
           host: process.env.REDIS_HOST || 'localhost',
           password: process.env.REDIS_PASSWORD || undefined,
+          maxRetriesPerRequest: 3, // Limit retries to prevent infinite hanging
+          retryDelayOnFailover: 100,
+          lazyConnect: false, // Connect immediately
+          connectTimeout: 5000, // 5 second timeout
         },
         defaultJobOptions: {
           removeOnComplete: 100, // Keep last 100 completed jobs
@@ -25,14 +42,43 @@ class EmailQueueService {
         },
       });
 
-      this.setupProcessors();
-      this.setupEventHandlers();
-      this.useRedis = true;
-      console.log('✅ Email queue initialized with Redis');
+      console.log('📋 Created Redis queue, testing connection...');
+      
+      // Test Redis connection
+      this.emailQueue.client.ping().then(() => {
+        console.log('✅ Redis ping successful, setting up processors...');
+        this.setupProcessors();
+        this.setupEventHandlers();
+        this.useRedis = true;
+        console.log('✅ Email queue initialized with Redis');
+        
+        // Test job processing
+        setTimeout(() => {
+          console.log('🧪 Testing job processing with a simple test job...');
+          this.emailQueue.add('send-campaign', { campaignId: 'test-campaign-id', test: true })
+            .then(job => console.log(`🧪 Test job added with ID: ${job.id}`))
+            .catch(err => console.error('🧪 Test job failed:', err));
+        }, 2000);
+      }).catch((error) => {
+        console.warn('⚠️  Redis connection failed, falling back to simple queue:', error.message);
+        this.useRedis = false;
+        this.initializeSimpleQueue();
+      });
+      
     } catch (error) {
       console.warn('⚠️  Redis not available, using simple in-memory queue:', error.message);
       this.useRedis = false;
+      this.initializeSimpleQueue();
+    }
+  }
+
+  /**
+   * Initialize simple queue fallback
+   */
+  initializeSimpleQueue() {
+    if (!this.simpleQueue) {
       this.simpleQueue = require('./simpleEmailQueue');
+      console.log('✅ Simple email queue initialized (no Redis)');
     }
   }
 
@@ -40,16 +86,26 @@ class EmailQueueService {
    * Setup job processors
    */
   setupProcessors() {
+    if (!this.emailQueue) {
+      console.log('Email queue not available, skipping processor setup');
+      return;
+    }
+
+    console.log('📋 Setting up Redis job processors...');
+    
     // Process single email jobs
     this.emailQueue.process('send-email', 10, async (job) => {
-      const { emailData, campaignId, subscriberId } = job.data;
+      console.log(`📧 Processing send-email job: ${job.id}`);
       
       try {
-        const result = await mailgunService.sendEmail({
-          ...emailData,
-          campaignId,
-          subscriberId
-        });
+        const { emailData, campaignId, subscriberId } = job.data;
+        const idempotencyKey = crypto.createHash('sha256').update(`${campaignId}:${subscriberId}:${emailData.subject || ''}`).digest('hex');
+        const existing = await EmailLog.findOne({ idempotencyKey });
+        if (existing) {
+          console.log(`⏭️ Duplicate send prevented for ${emailData.to}`);
+          return { duplicate: true, messageId: existing.messageId };
+        }
+        const result = await emailService.sendEmail({ ...emailData, campaignId, subscriberId });
 
         // Log successful send
         await this.logEmail({
@@ -58,18 +114,24 @@ class EmailQueueService {
           email: emailData.to,
           status: 'sent',
           messageId: result.messageId,
+          idempotencyKey,
           sentAt: new Date()
         });
 
+        console.log(`✅ Email sent successfully to ${emailData.to}`);
         return result;
       } catch (error) {
+        console.error(`❌ Send-email job ${job.id} failed:`, error);
+        
         // Log failed send
+        const { emailData, campaignId, subscriberId } = job.data;
         await this.logEmail({
           campaignId,
           subscriberId,
-          email: emailData.to,
+          email: emailData?.to,
           status: 'failed',
           error: error.message,
+          idempotencyKey: crypto.createHash('sha256').update(`${campaignId}:${subscriberId}:${emailData?.subject || ''}`).digest('hex'),
           sentAt: new Date()
         });
         
@@ -79,64 +141,62 @@ class EmailQueueService {
 
     // Process campaign batch jobs
     this.emailQueue.process('send-campaign', 1, async (job) => {
-      const { campaignId } = job.data;
+      console.log(`⚙️ PROCESSOR CALLED: Processing campaign job: ${job.id}, data:`, job.data);
       
       try {
-        await this.processCampaign(campaignId, job);
-        return { success: true, campaignId };
+        console.log(`🚀 About to call processCampaign for campaign: ${job.data.campaignId}`);
+        await this.processCampaign(job.data.campaignId, job);
+        console.log(`✅ Campaign job ${job.id} completed successfully`);
+        return { success: true, campaignId: job.data.campaignId };
       } catch (error) {
-        console.error(`Campaign ${campaignId} processing failed:`, error);
+        console.error(`❌ Campaign job ${job.id} failed:`, error);
         throw error;
       }
     });
 
     // Process scheduled campaigns
     this.emailQueue.process('send-scheduled-campaign', 1, async (job) => {
-      const { campaignId } = job.data;
+      console.log(`📅 Processing scheduled campaign job: ${job.id}`);
       
       try {
-        // Update campaign status to sending
-        await Campaign.findByIdAndUpdate(campaignId, { 
-          status: 'sending',
-          startedAt: new Date()
-        });
-
-        await this.processCampaign(campaignId, job);
-        
-        // Update campaign status to completed
-        await Campaign.findByIdAndUpdate(campaignId, { 
-          status: 'completed',
-          completedAt: new Date()
-        });
-
-        return { success: true, campaignId };
+        await this.processScheduledCampaign(job.data.campaignId, job);
+        return { success: true, campaignId: job.data.campaignId };
       } catch (error) {
-        // Update campaign status to failed
-        await Campaign.findByIdAndUpdate(campaignId, { 
-          status: 'failed',
-          error: error.message
-        });
-        
+        console.error(`❌ Scheduled campaign job ${job.id} failed:`, error);
         throw error;
       }
     });
+
+    console.log('✅ Redis job processors setup complete');
   }
 
   /**
    * Setup event handlers for job monitoring
    */
   setupEventHandlers() {
+    console.log('📋 Setting up Redis event handlers...');
+    
     this.emailQueue.on('completed', (job, result) => {
-      console.log(`Job ${job.id} completed:`, result);
+      console.log(`✅ Job completed: ${job.id} (${job.name})`, result);
     });
 
     this.emailQueue.on('failed', (job, err) => {
-      console.error(`Job ${job.id} failed:`, err.message);
+      console.error(`❌ Job failed: ${job.id} (${job.name})`, err.message);
     });
 
     this.emailQueue.on('stalled', (job) => {
-      console.warn(`Job ${job.id} stalled`);
+      console.warn(`⚠️ Job stalled: ${job.id} (${job.name})`);
     });
+
+    this.emailQueue.on('waiting', (jobId) => {
+      console.log(`⏳ Job waiting: ${jobId}`);
+    });
+
+    this.emailQueue.on('active', (job) => {
+      console.log(`▶️ Job active: ${job.id} (${job.name})`);
+    });
+
+    console.log('✅ Redis event handlers setup complete');
   }
 
   /**
@@ -164,19 +224,29 @@ class EmailQueueService {
    * Add campaign to queue
    */
   async addCampaignToQueue(campaignId, options = {}) {
-    if (!this.useRedis) {
+    // Always use simple queue if Redis is not available or not ready
+    if (!this.useRedis || !this.emailQueue) {
+      console.log('Using simple queue for campaign:', campaignId);
+      this.initializeSimpleQueue();
       return await this.simpleQueue.addCampaignToQueue(campaignId, options);
     }
 
-    const job = await this.emailQueue.add('send-campaign', {
-      campaignId
-    }, {
-      delay: options.delay || 0,
-      priority: options.priority || 0,
-      ...options
-    });
+    try {
+      const job = await this.emailQueue.add('send-campaign', {
+        campaignId
+      }, {
+        delay: options.delay || 0,
+        priority: options.priority || 0,
+        ...options
+      });
 
-    return job.id;
+      return job.id;
+    } catch (error) {
+      console.warn('Redis queue failed, falling back to simple queue:', error.message);
+      this.useRedis = false;
+      this.initializeSimpleQueue();
+      return await this.simpleQueue.addCampaignToQueue(campaignId, options);
+    }
   }
 
   /**
@@ -214,15 +284,38 @@ class EmailQueueService {
    * Process entire campaign
    */
   async processCampaign(campaignId, parentJob) {
+    console.log(`🚀 Starting campaign processing for campaign: ${campaignId}`);
+    
     const campaign = await Campaign.findById(campaignId)
       .populate('template')
-      .populate('subscribers');
+      .populate('individualSubscribers')
+      .populate('groups')
+      .populate('segments')
+      .populate({
+        path: 'user',
+        populate: {
+          path: 'organization'
+        }
+      });
 
     if (!campaign) {
       throw new Error(`Campaign ${campaignId} not found`);
     }
 
-    let { subscribers, template, subject, fromName, fromEmail } = campaign;
+    console.log(`📊 Campaign loaded:`, {
+      name: campaign.name,
+      hasIndividualSubscribers: !!(campaign.individualSubscribers && campaign.individualSubscribers.length),
+      individualSubscribersCount: campaign.individualSubscribers ? campaign.individualSubscribers.length : 0,
+      hasGroups: !!(campaign.groups && campaign.groups.length),
+      groupsCount: campaign.groups ? campaign.groups.length : 0,
+      hasSegments: !!(campaign.segments && campaign.segments.length),
+      segmentsCount: campaign.segments ? campaign.segments.length : 0
+    });
+
+    let { individualSubscribers, template, subject, fromName, fromEmail } = campaign;
+    let subscribers = individualSubscribers || [];
+
+    console.log(`👥 Initial subscribers from individualSubscribers: ${subscribers.length}`);
 
     // Resolve recipients if not pre-populated
     if (!subscribers || !Array.isArray(subscribers) || subscribers.length === 0) {
@@ -269,6 +362,27 @@ class EmailQueueService {
       subscribers = Array.from(map.values());
     }
 
+    console.log(`👥 Final subscribers after fetching: ${subscribers.length}`);
+    if (subscribers.length > 0) {
+      console.log(`📧 Sample subscriber emails: ${subscribers.slice(0, 3).map(s => s.email).join(', ')}`);
+    }
+
+    // Preference category filtering
+    if (campaign.preferenceCategory) {
+      const catId = String(campaign.preferenceCategory);
+      subscribers = subscribers.filter(s => {
+        if (!s.unsubscribedCategories) return true;
+        return !s.unsubscribedCategories.map(id => String(id)).includes(catId);
+      });
+    }
+
+    const allEmails = subscribers.map(s => s.email.toLowerCase());
+    const { suppressed } = await suppressionService.bulkFilter(allEmails, campaign.organization || null);
+    if (suppressed.size) {
+      subscribers = subscribers.filter(s => !suppressed.has(s.email.toLowerCase()));
+  logger.info('Suppression applied', { campaignId, skipped: allEmails.length - subscribers.length });
+    }
+
     const totalSubscribers = subscribers.length;
     let processedCount = 0;
 
@@ -299,26 +413,37 @@ class EmailQueueService {
 
     // Process subscribers in batches
     const batchSize = 100;
+    console.log(`📤 Starting to send emails to ${subscribers.length} subscribers in batches of ${batchSize}`);
+    
     for (let i = 0; i < subscribers.length; i += batchSize) {
       const batch = subscribers.slice(i, i + batchSize);
+      console.log(`📦 Processing batch ${Math.floor(i / batchSize) + 1} with ${batch.length} subscribers`);
       
       // Create email jobs for batch
       const emailJobs = batch.map(subscriber => {
+        if (subscriber.status && subscriber.status !== 'subscribed') {
+          console.log(`⏭️ Skipping subscriber ${subscriber.email} - status: ${subscriber.status}`);
+          return null;
+        }
         const personalizedContent = this.personalizeHtml(baseHtml, subscriber);
         
         return this.addEmailToQueue({
-          to: subscriber.email,
-          from: `${fromName} <${fromEmail}>`,
+          to: subscriber.email, // Send to actual subscriber email
+          from: fromEmail || 'onboarding@resend.dev', // Use campaign's fromEmail or fallback to Resend verified sender
+          fromName: fromName, // Include the fromName
           subject: this.personalizeSubject(subject, subscriber),
           html: personalizedContent,
           campaignId,
           subscriberId: subscriber._id,
           campaignType: campaign.type,
-          category: campaign.category
+          category: campaign.category,
+          organizationId: campaign.organization || campaign.user.organization
         }, campaignId, subscriber._id);
       });
 
-      await Promise.all(emailJobs);
+      await Promise.all(emailJobs.filter(Boolean));
+      console.log(`✅ Queued ${emailJobs.filter(Boolean).length} emails for batch ${Math.floor(i / batchSize) + 1}`);
+      
       processedCount += batch.length;
 
       // Update parent job progress
@@ -335,9 +460,12 @@ class EmailQueueService {
 
     // Update campaign statistics
     await Campaign.findByIdAndUpdate(campaignId, {
-      totalEmails: totalSubscribers,
-      emailsQueued: totalSubscribers
+      status: 'sent',
+      totalRecipients: totalSubscribers,
+      sentAt: new Date()
     });
+
+    console.log(`🎉 Campaign ${campaignId} processing completed. Total emails queued: ${totalSubscribers}`);
   }
 
   /**
@@ -396,6 +524,76 @@ class EmailQueueService {
       completed: completed.length,
       failed: failed.length
     };
+  }
+
+  /**
+   * Add campaign to queue for processing
+   */
+  async addCampaignToQueue(campaignId) {
+    console.log(`📋 addCampaignToQueue called for campaign: ${campaignId}, usingRedis: ${this.useRedis}`);
+    
+    if (!this.useRedis) {
+      console.log(`📋 Using simple queue for campaign: ${campaignId}`);
+      return await this.simpleQueue.addCampaignToQueue(campaignId);
+    }
+
+    // For Redis, add the campaign to the queue for processing
+    console.log(`📋 Adding campaign ${campaignId} to Redis queue with job name 'send-campaign'`);
+    const job = await this.emailQueue.add('send-campaign', {
+      campaignId: campaignId
+    });
+    
+    console.log(`📋 Campaign ${campaignId} added to Redis queue with job ID: ${job.id}`);
+    return job.id;
+  }
+
+  /**
+   * Get all subscribers for a campaign
+   */
+  async getCampaignSubscribers(campaign) {
+    const Subscriber = require('../models/Subscriber');
+    let subscribers = campaign.individualSubscribers || [];
+    
+    // If no individual subscribers, get from groups and segments
+    if (subscribers.length === 0) {
+      const allSubscribers = new Set();
+      
+      // Get subscribers from groups
+      if (campaign.groups && campaign.groups.length > 0) {
+        const groupIds = campaign.groups.map(g => g._id || g);
+        const groupSubscribers = await Subscriber.find({
+          groups: { $in: groupIds },
+          status: 'subscribed'
+        });
+        groupSubscribers.forEach(sub => allSubscribers.add(sub._id.toString()));
+      }
+      
+      // Get subscribers from segments
+      if (campaign.segments && campaign.segments.length > 0) {
+        // For now, get all subscribed users for segments (you can implement segment logic later)
+        const segmentSubscribers = await Subscriber.find({
+          status: 'subscribed'
+        });
+        segmentSubscribers.forEach(sub => allSubscribers.add(sub._id.toString()));
+      }
+      
+      // Convert back to subscriber objects
+      if (allSubscribers.size > 0) {
+        subscribers = await Subscriber.find({
+          _id: { $in: Array.from(allSubscribers) },
+          status: 'subscribed'
+        });
+      }
+    }
+
+    // Suppression filtering
+    const allEmails = subscribers.map(s => s.email.toLowerCase());
+    const { suppressed } = await suppressionService.bulkFilter(allEmails, campaign.organization || null);
+    if (suppressed.size) {
+      subscribers = subscribers.filter(s => !suppressed.has(s.email.toLowerCase()));
+    }
+
+    return subscribers;
   }
 
   /**

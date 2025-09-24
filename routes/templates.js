@@ -105,11 +105,11 @@ router.get('/:id', async (req, res) => {
 // Create a new template
 router.post('/', async (req, res) => {
   try {
-    const { name, description, category, structure, tags, thumbnail } = req.body;
+    const { name, description, category, structure, htmlContent, plainTextContent, emailDesign, tags, thumbnail } = req.body;
     
     // Validation
-    if (!name || !structure) {
-      return res.status(400).json({ message: 'Name and structure are required' });
+    if (!name || (!structure && !htmlContent)) {
+      return res.status(400).json({ message: 'Name and either structure or htmlContent are required' });
     }
     
     const template = new Template({
@@ -118,6 +118,9 @@ router.post('/', async (req, res) => {
       description,
       category: category || 'custom',
       structure,
+      htmlContent,
+      plainTextContent,
+      emailDesign,
       tags: tags || [],
       type: 'user',
       thumbnail: thumbnail || undefined
@@ -138,7 +141,7 @@ router.post('/', async (req, res) => {
 // Update a template
 router.put('/:id', async (req, res) => {
   try {
-    const { name, description, category, structure, tags, thumbnail } = req.body;
+    const { name, description, category, structure, htmlContent, plainTextContent, emailDesign, tags, thumbnail } = req.body;
     
     const template = await Template.findOne({
       _id: req.params.id,
@@ -155,6 +158,9 @@ router.put('/:id', async (req, res) => {
     if (description !== undefined) template.description = description;
     if (category !== undefined) template.category = category;
     if (structure !== undefined) template.structure = structure;
+    if (htmlContent !== undefined) template.htmlContent = htmlContent;
+    if (plainTextContent !== undefined) template.plainTextContent = plainTextContent;
+    if (emailDesign !== undefined) template.emailDesign = emailDesign;
     if (tags !== undefined) template.tags = tags;
     if (thumbnail !== undefined) template.thumbnail = thumbnail;
     
@@ -218,6 +224,9 @@ router.post('/:id/duplicate', async (req, res) => {
       description: originalTemplate.description,
       category: originalTemplate.category,
       structure: originalTemplate.structure,
+      htmlContent: originalTemplate.htmlContent,
+      plainTextContent: originalTemplate.plainTextContent,
+      emailDesign: originalTemplate.emailDesign,
       tags: originalTemplate.tags,
       type: 'user',
       parentTemplate: originalTemplate._id
@@ -261,7 +270,8 @@ router.post('/:id/use', async (req, res) => {
         _id: template._id,
         name: template.name,
         structure: template.structure,
-        htmlContent: template.htmlContent
+        htmlContent: template.htmlContent,
+        emailDesign: template.emailDesign
       }
     });
   } catch (error) {

@@ -4,24 +4,27 @@ const Queue = require('bull');
 const { sendEmail } = require('./emailService');
 const logger = require('../utils/logger');
 
-// Redis connection configuration
-const redisConfig = {
-  redis: {
-    port: process.env.REDIS_PORT || 6379,
-    host: process.env.REDIS_HOST || 'localhost',
-    password: process.env.REDIS_PASSWORD || undefined,
-    db: process.env.REDIS_DB || 0,
-  },
+// Basic redis connection configuration (avoid advanced options that Bull forbids on bclient/subscriber)
+const baseRedis = {
+  port: Number(process.env.REDIS_PORT) || 6379,
+  host: process.env.REDIS_HOST || 'localhost',
+  password: process.env.REDIS_PASSWORD || undefined,
+  db: Number(process.env.REDIS_DB) || 0
 };
+if (process.env.REDIS_TLS_ENABLED === 'true') {
+  baseRedis.tls = {}; // minimal TLS enable
+}
+const redisConfig = { redis: baseRedis };
 
-// Create email queue with rate limiting
-const emailQueue = new Queue('email sending', redisConfig);
+// Create email queue with rate limiting & optional limiter
+const queuePrefix = process.env.QUEUE_PREFIX || undefined;
+const queueOptions = queuePrefix ? { ...redisConfig, prefix: queuePrefix } : redisConfig;
+const emailQueue = new Queue('email sending', queueOptions);
 
 // Configure queue settings
-emailQueue.settings = {
-  stalledInterval: 30 * 1000, // 30 seconds
-  maxStalledCount: 1,
-};
+// (settings largely provided via constructor above; keep override for clarity)
+emailQueue.settings.stalledInterval = 30 * 1000;
+emailQueue.settings.maxStalledCount = 1;
 
 // Rate limiting: 100 emails per minute (adjust based on your email provider limits)
 const RATE_LIMIT = {
@@ -45,7 +48,7 @@ emailQueue.process('send-email', 10, async (job) => {
     fromName 
   } = job.data;
 
-  logger.log(`[QueueService] Processing email job for ${toEmail}, Campaign: ${campaignId}`);
+  logger.log(`[QueueService] Processing email job`, { toEmail, campaignId });
 
   try {
     const result = await sendEmail(
@@ -61,13 +64,13 @@ emailQueue.process('send-email', 10, async (job) => {
     );
 
     if (result && result.success) {
-      logger.log(`[QueueService] Email sent successfully to ${toEmail}`);
+  logger.log(`[QueueService] Email sent successfully`, { toEmail });
       return { success: true, result };
     } else {
       throw new Error(result?.message || 'Email sending failed');
     }
   } catch (error) {
-    logger.error(`[QueueService] Email job failed for ${toEmail}:`, error);
+  logger.error(`[QueueService] Email job failed`, { toEmail, error: error.message });
     throw error; // This will trigger Bull's retry mechanism
   }
 });
@@ -78,7 +81,7 @@ emailQueue.process('send-email', 10, async (job) => {
 emailQueue.process('send-campaign-batch', 5, async (job) => {
   const { campaignId, subscribers, timezone } = job.data;
   
-  logger.log(`[QueueService] Processing campaign batch for ${subscribers.length} subscribers in timezone ${timezone}`);
+  logger.log(`[QueueService] Processing campaign batch`, { batchSize: subscribers.length, timezone });
 
   const results = [];
   
@@ -86,15 +89,15 @@ emailQueue.process('send-campaign-batch', 5, async (job) => {
     try {
       // Add individual email jobs with rate limiting
       const emailJob = await addEmailJob({
-        toEmail: subscriber.email,
+        toEmail: subscriber.email, // Send to actual subscriber email
         subject: job.data.subject,
         htmlContent: job.data.htmlContent,
         plainTextContent: job.data.plainTextContent,
         campaignId,
         subscriberId: subscriber._id,
         groupId: job.data.groupId,
-        fromEmail: job.data.fromEmail,
-        fromName: job.data.fromName,
+        fromEmail: 'onboarding@resend.dev', // Use Resend verified sender
+        fromName: 'EmailXP',
       }, {
         delay: 0, // No delay for batch processing
         attempts: 3,

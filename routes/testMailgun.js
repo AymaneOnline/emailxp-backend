@@ -12,10 +12,6 @@ router.get('/config', (req, res) => {
   const config = {
     emailProvider: serviceInfo.provider,
     emailConfigured: serviceInfo.configured,
-    mailerSendConfigured: !!process.env.MAILERSEND_API_KEY,
-    amazonSESConfigured: !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY),
-    smtp2goConfigured: !!(process.env.SMTP2GO_USERNAME && process.env.SMTP2GO_PASSWORD),
-    mailgunConfigured: !!(process.env.MAILGUN_API_KEY && process.env.MAILGUN_DOMAIN),
     resendConfigured: !!process.env.RESEND_API_KEY,
     sendgridConfigured: !!process.env.SENDGRID_API_KEY,
     redisConfigured: !!(process.env.REDIS_HOST && process.env.REDIS_PORT),

@@ -26,17 +26,19 @@ const subscriberSchema = new mongoose.Schema(
         },
         status: {
             type: String,
-            enum: ['subscribed', 'unsubscribed', 'bounced', 'complained'],
+            enum: ['pending','subscribed', 'unsubscribed', 'bounced', 'complained'],
             default: 'subscribed',
             index: true
         },
-        tags: [{
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Tag'
-        }],
+        // tags removed
         groups: [{
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Group'
+        }],
+        unsubscribedCategories: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'PreferenceCategory',
+            index: true
         }],
         customFields: {
             type: Map,
@@ -51,12 +53,41 @@ const subscriberSchema = new mongoose.Schema(
         confirmedAt: {
             type: Date
         },
+        confirmationToken: {
+            type: String,
+            index: true
+        },
+        confirmationSentAt: {
+            type: Date
+        },
+        confirmationExpiresAt: {
+            type: Date
+        },
         unsubscribedAt: {
             type: Date
         },
         lastActivityAt: {
             type: Date,
             default: Date.now
+        },
+        // Engagement metrics
+        openCount: {
+            type: Number,
+            default: 0,
+            index: true
+        },
+        clickCount: {
+            type: Number,
+            default: 0,
+            index: true
+        },
+        lastOpenAt: {
+            type: Date,
+            index: true
+        },
+        lastClickAt: {
+            type: Date,
+            index: true
         },
         // Unsubscribe token for secure unsubscribe links
         unsubscribeToken: {
@@ -101,6 +132,9 @@ subscriberSchema.index(
 subscriberSchema.index({ user: 1, status: 1 });
 subscriberSchema.index({ user: 1, isDeleted: 1, status: 1 });
 subscriberSchema.index({ user: 1, lastActivityAt: -1 });
+// For efficient cleanup of expired pending confirmations
+subscriberSchema.index({ status: 1, confirmationExpiresAt: 1 });
+subscriberSchema.index({ user: 1, unsubscribedCategories: 1 });
 
 // Virtual for displaying subscriber name
 subscriberSchema.virtual('displayName').get(function() {
@@ -158,6 +192,21 @@ subscriberSchema.statics.findActive = function(userId) {
         status: 'active',
         isDeleted: false
     });
+};
+
+// Remove subscribers that never confirmed within the allowed TTL
+subscriberSchema.statics.cleanupExpiredPending = async function(limit = 1000) {
+    const now = new Date();
+    const criteria = {
+        status: 'pending',
+        confirmationExpiresAt: { $lt: now }
+    };
+    // Soft delete instead of hard delete to keep audit trail
+    const docs = await this.find(criteria).limit(limit).select('_id isDeleted');
+    if (!docs.length) return { removed: 0 };
+    const ids = docs.map(d => d._id);
+    await this.updateMany({ _id: { $in: ids } }, { $set: { isDeleted: true, deletedAt: now } });
+    return { removed: ids.length };
 };
 
 // Pre-save middleware

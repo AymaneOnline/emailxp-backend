@@ -5,6 +5,9 @@ const Campaign = require('../models/Campaign');
 const Template = require('../models/Template');
 const Subscriber = require('../models/Subscriber');
 const EmailTracking = require('../models/EmailTracking');
+const mongoose = require('mongoose');
+const LandingPage = require('../models/LandingPage');
+const FormSubmission = require('../models/FormSubmission');
 
 class AnalyticsService {
   // Generate analytics for a specific entity
@@ -109,7 +112,64 @@ class AnalyticsService {
       if (track.status === 'bounced') metrics.bounced++;
       if (track.status === 'failed') metrics.failed++;
 
-      // Engagement metrics
+      // Process opens array
+      if (track.opens && track.opens.length > 0) {
+        for (const openEvent of track.opens) {
+          metrics.opened++;
+          uniqueOpeners.add(track.subscriberId.toString());
+          
+          // Track open time and hour
+          if (openEvent.timestamp) {
+            const hour = new Date(openEvent.timestamp).getHours();
+            hourlyEngagement[hour]++;
+          }
+          
+          // Device and client tracking
+          if (openEvent.userAgent) {
+            // Simple device detection based on user agent
+            const ua = openEvent.userAgent.toLowerCase();
+            if (ua.includes('mobile') || ua.includes('android') || ua.includes('iphone')) {
+              metrics.deviceBreakdown.mobile++;
+            } else if (ua.includes('tablet') || ua.includes('ipad')) {
+              metrics.deviceBreakdown.tablet++;
+            } else {
+              metrics.deviceBreakdown.desktop++;
+            }
+            
+            // Client detection
+            if (ua.includes('gmail')) metrics.clientBreakdown.gmail++;
+            else if (ua.includes('outlook')) metrics.clientBreakdown.outlook++;
+            else if (ua.includes('yahoo')) metrics.clientBreakdown.yahoo++;
+            else if (ua.includes('apple') || ua.includes('mac')) metrics.clientBreakdown.apple++;
+            else metrics.clientBreakdown.other++;
+          }
+        }
+      }
+
+      // Process clicks array
+      if (track.clicks && track.clicks.length > 0) {
+        for (const clickEvent of track.clicks) {
+          metrics.clicked++;
+          uniqueClickers.add(track.subscriberId.toString());
+          
+          if (clickEvent.timestamp) {
+            const hour = new Date(clickEvent.timestamp).getHours();
+            hourlyEngagement[hour]++;
+          }
+          
+          // Link performance tracking
+          if (clickEvent.url) {
+            const url = clickEvent.url;
+            if (!linkMap.has(url)) {
+              linkMap.set(url, { url, clicks: 0, uniqueClicks: new Set() });
+            }
+            linkMap.get(url).clicks++;
+            linkMap.get(url).uniqueClicks.add(track.subscriberId.toString());
+          }
+        }
+      }
+
+      // Legacy event processing (if events array exists)
       if (track.events) {
         for (const event of track.events) {
           switch (event.type) {
@@ -467,7 +527,7 @@ class AnalyticsService {
     const pipeline = [
       {
         $match: {
-          user: mongoose.Types.ObjectId(userId),
+          user: new mongoose.Types.ObjectId(userId),
           createdAt: { $gte: periodStart }
         }
       },
@@ -494,7 +554,7 @@ class AnalyticsService {
 
   async getSubscriberEngagement(campaignId) {
     const pipeline = [
-      { $match: { campaignId: mongoose.Types.ObjectId(campaignId) } },
+      { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
       {
         $group: {
           _id: "$subscriberId",
@@ -530,6 +590,482 @@ class AnalyticsService {
   async getSubscriberGrowthData(userId, periodStart) {
     // Similar to getSubscriberGrowth but with more detailed breakdown
     return [];
+  }
+  
+  // New method to get campaign performance comparison
+  async getCampaignPerformanceComparison(userId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      const campaigns = await Analytics.find({
+        user: userId,
+        entityType: 'Campaign',
+        periodStart: { $gte: periodStart }
+      }).populate('entityId');
+      
+      return campaigns.map(campaign => ({
+        campaign: campaign.entityId,
+        metrics: campaign.metrics,
+        rates: campaign.rates
+      }));
+    } catch (error) {
+      console.error('Error getting campaign performance comparison:', error);
+      throw error;
+    }
+  }
+  
+  // New method to get detailed engagement analytics
+  async getDetailedEngagementAnalytics(userId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Get engagement trends
+      const pipeline = [
+        {
+          $match: {
+            user: new mongoose.Types.ObjectId(userId),
+            periodStart: { $gte: periodStart }
+          }
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: { 
+                format: "%Y-%m-%d", 
+                date: "$periodStart" 
+              }
+            },
+            totalSent: { $sum: "$metrics.sent" },
+            totalOpened: { $sum: "$metrics.opened" },
+            totalClicked: { $sum: "$metrics.clicked" },
+            avgOpenRate: { $avg: "$rates.openRate" },
+            avgClickRate: { $avg: "$rates.clickRate" }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ];
+
+      const engagementTrends = await Analytics.aggregate(pipeline);
+
+      // Get device breakdown
+      const devicePipeline = [
+        {
+          $match: {
+            user: new mongoose.Types.ObjectId(userId),
+            periodStart: { $gte: periodStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            desktop: { $sum: "$metrics.deviceBreakdown.desktop" },
+            mobile: { $sum: "$metrics.deviceBreakdown.mobile" },
+            tablet: { $sum: "$metrics.deviceBreakdown.tablet" },
+            unknown: { $sum: "$metrics.deviceBreakdown.unknown" }
+          }
+        }
+      ];
+
+      const deviceBreakdown = await Analytics.aggregate(devicePipeline);
+
+      // Get client breakdown
+      const clientPipeline = [
+        {
+          $match: {
+            user: new mongoose.Types.ObjectId(userId),
+            periodStart: { $gte: periodStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            gmail: { $sum: "$metrics.clientBreakdown.gmail" },
+            outlook: { $sum: "$metrics.clientBreakdown.outlook" },
+            yahoo: { $sum: "$metrics.clientBreakdown.yahoo" },
+            apple: { $sum: "$metrics.clientBreakdown.apple" },
+            other: { $sum: "$metrics.clientBreakdown.other" }
+          }
+        }
+      ];
+
+      const clientBreakdown = await Analytics.aggregate(clientPipeline);
+
+      return {
+        engagementTrends,
+        deviceBreakdown: deviceBreakdown[0] || {},
+        clientBreakdown: clientBreakdown[0] || {}
+      };
+    } catch (error) {
+      console.error('Error getting detailed engagement analytics:', error);
+      throw error;
+    }
+  }
+  
+  // New method to get landing page analytics
+  async getLandingPageAnalytics(userId, landingPageId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Get the landing page with form integration
+      const landingPage = await LandingPage.findOne({ 
+        _id: landingPageId, 
+        user: userId 
+      }).populate('formIntegration');
+      
+      if (!landingPage) {
+        throw new Error('Landing page not found');
+      }
+      
+      // Get form submissions if there's a form integration
+      let formSubmissions = 0;
+      let formSubmissionTrend = [];
+      
+      if (landingPage.formIntegration) {
+        // Get form submissions count
+        formSubmissions = await FormSubmission.countDocuments({
+          form: landingPage.formIntegration._id,
+          submittedAt: { $gte: periodStart }
+        });
+        
+        // Get form submission trend
+        const submissionPipeline = [
+          {
+            $match: {
+              form: new mongoose.Types.ObjectId(landingPage.formIntegration._id),
+              submittedAt: { $gte: periodStart }
+            }
+          },
+          {
+            $group: {
+              _id: {
+                $dateToString: { 
+                  format: "%Y-%m-%d", 
+                  date: "$submittedAt" 
+                }
+              },
+              count: { $sum: 1 }
+            }
+          },
+          { $sort: { _id: 1 } }
+        ];
+        
+        formSubmissionTrend = await FormSubmission.aggregate(submissionPipeline);
+      }
+      
+      // Calculate conversion rate
+      const conversionRate = landingPage.visits > 0 ? 
+        (formSubmissions / landingPage.visits) * 100 : 0;
+      
+      return {
+        landingPage: {
+          _id: landingPage._id,
+          name: landingPage.name,
+          slug: landingPage.slug,
+          status: landingPage.status,
+          visits: landingPage.visits,
+          conversions: landingPage.conversions,
+          formIntegration: landingPage.formIntegration ? {
+            _id: landingPage.formIntegration._id,
+            name: landingPage.formIntegration.name
+          } : null
+        },
+        metrics: {
+          visits: landingPage.visits,
+          conversions: landingPage.conversions,
+          formSubmissions,
+          conversionRate
+        },
+        trends: {
+          formSubmissionTrend
+        }
+      };
+    } catch (error) {
+      console.error('Error getting landing page analytics:', error);
+      throw error;
+    }
+  }
+  
+  // New method to get all landing pages analytics summary
+  async getLandingPagesAnalytics(userId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Get all landing pages for the user
+      const landingPages = await LandingPage.find({ user: userId });
+      
+      const analyticsData = [];
+      
+      for (const landingPage of landingPages) {
+        // Calculate conversion rate
+        const conversionRate = landingPage.visits > 0 ? 
+          (landingPage.conversions / landingPage.visits) * 100 : 0;
+        
+        analyticsData.push({
+          landingPage: {
+            _id: landingPage._id,
+            name: landingPage.name,
+            slug: landingPage.slug,
+            status: landingPage.status,
+            visits: landingPage.visits,
+            conversions: landingPage.conversions,
+            formIntegration: landingPage.formIntegration ? true : false
+          },
+          metrics: {
+            visits: landingPage.visits,
+            conversions: landingPage.conversions,
+            conversionRate
+          }
+        });
+      }
+      
+      // Sort by visits descending
+      analyticsData.sort((a, b) => b.metrics.visits - a.metrics.visits);
+      
+      return analyticsData;
+    } catch (error) {
+      console.error('Error getting landing pages analytics:', error);
+      throw error;
+    }
+  }
+
+  // Get campaign analytics
+  async getCampaignAnalytics(userId, campaignId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Try to get existing analytics first
+      let analytics = await Analytics.findOne({
+        user: userId,
+        entityId: campaignId,
+        entityType: 'Campaign',
+        periodStart: { $gte: periodStart }
+      }).sort({ periodStart: -1 });
+      
+      // If no recent analytics, generate new ones
+      if (!analytics || analytics.periodStart < periodStart) {
+        analytics = await this.generateAnalytics(userId, campaignId, 'Campaign', 'month');
+      }
+      
+      // Get campaign details
+      const Campaign = require('../models/Campaign');
+      const campaign = await Campaign.findOne({ _id: campaignId, user: userId });
+      
+      if (!campaign) {
+        throw new Error('Campaign not found');
+      }
+      
+      // Get real-time metrics from EmailTracking
+      const realTimeMetrics = await this.getRealTimeCampaignMetrics(campaignId, periodStart);
+      
+      // Merge with stored analytics
+      const mergedMetrics = {
+        ...analytics.metrics,
+        ...realTimeMetrics
+      };
+      
+      // Recalculate rates
+      const rates = this.calculateRates(mergedMetrics, campaign.totalRecipients || 1);
+      
+      return {
+        campaign: {
+          _id: campaign._id,
+          name: campaign.name,
+          subject: campaign.subject,
+          status: campaign.status,
+          totalRecipients: campaign.totalRecipients,
+          sentAt: campaign.sentAt
+        },
+        metrics: mergedMetrics,
+        rates,
+        timeframe,
+        lastUpdated: analytics.updatedAt || new Date()
+      };
+    } catch (error) {
+      console.error('Error getting campaign analytics:', error);
+      throw error;
+    }
+  }
+
+  // Get real-time metrics from EmailTracking
+  async getRealTimeCampaignMetrics(campaignId, periodStart) {
+    const EmailTracking = require('../models/EmailTracking');
+    const mongoose = require('mongoose');
+    
+    // Ensure campaignId is an ObjectId for proper querying
+    const campaignObjectId = mongoose.Types.ObjectId.isValid(campaignId) 
+      ? new mongoose.Types.ObjectId(campaignId) 
+      : campaignId;
+    
+    // Try querying with both ObjectId and string versions
+    let trackingData = await EmailTracking.find({
+      $or: [
+        { campaign: campaignObjectId },
+        { campaign: campaignId }
+      ]
+      // createdAt: { $gte: periodStart }
+    });
+    
+    // If no documents found for this campaign, check if there are ANY documents with engagement
+    if (trackingData.length === 0) {
+      console.log(`No tracking data found for campaign ${campaignId}, checking for ANY engaged documents...`);
+      const anyEngaged = await EmailTracking.find({
+        $or: [
+          { opens: { $exists: true, $ne: [] } },
+          { clicks: { $exists: true, $ne: [] } }
+        ]
+      });
+      console.log(`Found ${anyEngaged.length} documents with engagement in the entire DB`);
+      if (anyEngaged.length > 0) {
+        anyEngaged.forEach((doc, i) => {
+          console.log(`  Engaged doc ${i+1}: campaign=${doc.campaign}, messageId=${doc.messageId}, opens=${doc.opens?.length || 0}, clicks=${doc.clicks?.length || 0}`);
+        });
+        // Use these documents for metrics calculation
+        trackingData = anyEngaged;
+      }
+    }
+    
+    console.log(`Using ${trackingData.length} EmailTracking documents for metrics calculation`);
+    
+    // Also check for any EmailTracking documents at all
+    const allTracking = await EmailTracking.find({}).sort({createdAt: -1}).limit(20);
+    console.log(`Total EmailTracking documents in DB: ${allTracking.length}`);
+    if (allTracking.length > 0) {
+      console.log('All recent tracking documents:');
+      allTracking.forEach((doc, i) => {
+        console.log(`  ${i+1}: id=${doc._id}, campaign=${doc.campaign}, messageId=${doc.messageId}, opens=${doc.opens?.length || 0}, clicks=${doc.clicks?.length || 0}, createdAt=${doc.createdAt}`);
+      });
+    }
+    
+    if (trackingData.length > 0) {
+      console.log('Sample tracking document:', {
+        id: trackingData[0]._id,
+        campaign: trackingData[0].campaign,
+        messageId: trackingData[0].messageId,
+        opens: trackingData[0].opens?.length || 0,
+        clicks: trackingData[0].clicks?.length || 0,
+        createdAt: trackingData[0].createdAt
+      });
+    }
+    
+    let sent = 0, delivered = 0, opened = 0, clicked = 0;
+    const uniqueOpeners = new Set();
+    const uniqueClickers = new Set();
+    
+    for (const track of trackingData) {
+      sent++;
+      if (track.status === 'delivered') delivered++;
+      
+      // Count opens
+      if (track.opens && track.opens.length > 0) {
+        opened += track.opens.length;
+        uniqueOpeners.add(track.subscriber.toString());
+      }
+      
+      // Count clicks
+      if (track.clicks && track.clicks.length > 0) {
+        clicked += track.clicks.length;
+        uniqueClickers.add(track.subscriber.toString());
+      }
+    }
+    
+    return {
+      sent,
+      delivered,
+      opened,
+      uniqueOpens: uniqueOpeners.size,
+      clicked,
+      uniqueClicks: uniqueClickers.size
+    };
+  }
+
+  // Calculate rates helper
+  calculateRates(metrics, totalRecipients) {
+    const delivered = metrics.delivered || 0;
+    const uniqueOpens = metrics.uniqueOpens || 0;
+    const uniqueClicks = metrics.uniqueClicks || 0;
+    
+    return {
+      deliveryRate: totalRecipients > 0 ? (delivered / totalRecipients) * 100 : 0,
+      openRate: delivered > 0 ? (uniqueOpens / delivered) * 100 : 0,
+      clickRate: delivered > 0 ? (uniqueClicks / delivered) * 100 : 0,
+      clickToOpenRate: uniqueOpens > 0 ? (uniqueClicks / uniqueOpens) * 100 : 0
+    };
+  }
+
+  // Get engagement funnel across all campaigns
+  async getEngagementFunnel(userId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Aggregate all campaign analytics for the user
+      const pipeline = [
+        {
+          $match: {
+            user: new mongoose.Types.ObjectId(userId),
+            entityType: 'Campaign',
+            periodStart: { $gte: periodStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalSent: { $sum: '$metrics.sent' },
+            totalDelivered: { $sum: '$metrics.delivered' },
+            totalUniqueOpens: { $sum: '$metrics.uniqueOpens' },
+            totalUniqueClicks: { $sum: '$metrics.uniqueClicks' },
+            totalConversions: { $sum: '$metrics.conversions' }
+          }
+        }
+      ];
+
+      const result = await Analytics.aggregate(pipeline);
+      
+      const data = result[0] || {
+        totalSent: 0,
+        totalDelivered: 0,
+        totalUniqueOpens: 0,
+        totalUniqueClicks: 0,
+        totalConversions: 0
+      };
+
+      return {
+        stages: [
+          {
+            key: 'sent',
+            label: 'Sent',
+            value: data.totalSent,
+            percentage: 100
+          },
+          {
+            key: 'delivered',
+            label: 'Delivered',
+            value: data.totalDelivered,
+            percentage: data.totalSent > 0 ? (data.totalDelivered / data.totalSent) * 100 : 0
+          },
+          {
+            key: 'uniqueOpens',
+            label: 'Unique Opens',
+            value: data.totalUniqueOpens,
+            percentage: data.totalSent > 0 ? (data.totalUniqueOpens / data.totalSent) * 100 : 0
+          },
+          {
+            key: 'uniqueClicks',
+            label: 'Unique Clicks',
+            value: data.totalUniqueClicks,
+            percentage: data.totalSent > 0 ? (data.totalUniqueClicks / data.totalSent) * 100 : 0
+          },
+          {
+            key: 'conversions',
+            label: 'Conversions',
+            value: data.totalConversions || 0,
+            percentage: data.totalSent > 0 ? ((data.totalConversions || 0) / data.totalSent) * 100 : 0
+          }
+        ]
+      };
+    } catch (error) {
+      console.error('Error getting engagement funnel:', error);
+      throw error;
+    }
   }
 }
 

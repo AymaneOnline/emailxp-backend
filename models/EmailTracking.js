@@ -19,7 +19,7 @@ const emailTrackingSchema = new mongoose.Schema({
   organization: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Organization',
-    required: true
+    required: false
   },
   
   // Email Details
@@ -279,7 +279,7 @@ emailTrackingSchema.methods.recordSpam = function(spamData = {}) {
 // Static methods for analytics
 emailTrackingSchema.statics.getCampaignStats = function(campaignId) {
   return this.aggregate([
-    { $match: { campaign: mongoose.Types.ObjectId(campaignId) } },
+    { $match: { campaign: new mongoose.Types.ObjectId(campaignId) } },
     {
       $group: {
         _id: null,
@@ -298,7 +298,7 @@ emailTrackingSchema.statics.getCampaignStats = function(campaignId) {
 };
 
 emailTrackingSchema.statics.getOrganizationStats = function(organizationId, dateRange = {}) {
-  const matchQuery = { organization: mongoose.Types.ObjectId(organizationId) };
+  const matchQuery = { organization: new mongoose.Types.ObjectId(organizationId) };
   
   if (dateRange.startDate && dateRange.endDate) {
     matchQuery.sentAt = {

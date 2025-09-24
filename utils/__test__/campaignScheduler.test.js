@@ -30,6 +30,7 @@ describe('executeSendCampaign', () => {
   // Mock campaign and group data - define a base structure
   const mockCampaignId = 'mockCampaignId';
   const mockListId = 'mockListId';
+  const mockGroupId = 'mockGroupId';
 
   const baseMockCampaign = {
     _id: mockCampaignId,

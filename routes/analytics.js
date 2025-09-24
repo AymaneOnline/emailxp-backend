@@ -127,84 +127,10 @@ router.get('/subscribers', protect, async (req, res) => {
 router.get('/engagement', protect, async (req, res) => {
   try {
     const { timeframe = '30d', groupBy = 'day' } = req.query;
-    const { periodStart } = analyticsService.getTimeframeDates(timeframe);
     
-    // Get engagement trends
-    const pipeline = [
-      {
-        $match: {
-          user: req.user._id,
-          periodStart: { $gte: periodStart }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: { 
-              format: groupBy === 'hour' ? "%Y-%m-%d %H:00" : "%Y-%m-%d", 
-              date: "$periodStart" 
-            }
-          },
-          totalSent: { $sum: "$metrics.sent" },
-          totalOpened: { $sum: "$metrics.opened" },
-          totalClicked: { $sum: "$metrics.clicked" },
-          avgOpenRate: { $avg: "$rates.openRate" },
-          avgClickRate: { $avg: "$rates.clickRate" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ];
-
-    const engagementTrends = await Analytics.aggregate(pipeline);
-
-    // Get device breakdown
-    const devicePipeline = [
-      {
-        $match: {
-          user: req.user._id,
-          periodStart: { $gte: periodStart }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          desktop: { $sum: "$metrics.deviceBreakdown.desktop" },
-          mobile: { $sum: "$metrics.deviceBreakdown.mobile" },
-          tablet: { $sum: "$metrics.deviceBreakdown.tablet" },
-          unknown: { $sum: "$metrics.deviceBreakdown.unknown" }
-        }
-      }
-    ];
-
-    const deviceBreakdown = await Analytics.aggregate(devicePipeline);
-
-    // Get client breakdown
-    const clientPipeline = [
-      {
-        $match: {
-          user: req.user._id,
-          periodStart: { $gte: periodStart }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          gmail: { $sum: "$metrics.clientBreakdown.gmail" },
-          outlook: { $sum: "$metrics.clientBreakdown.outlook" },
-          yahoo: { $sum: "$metrics.clientBreakdown.yahoo" },
-          apple: { $sum: "$metrics.clientBreakdown.apple" },
-          other: { $sum: "$metrics.clientBreakdown.other" }
-        }
-      }
-    ];
-
-    const clientBreakdown = await Analytics.aggregate(clientPipeline);
-
-    res.json({
-      engagementTrends,
-      deviceBreakdown: deviceBreakdown[0] || {},
-      clientBreakdown: clientBreakdown[0] || {}
-    });
+    const analytics = await analyticsService.getDetailedEngagementAnalytics(req.user._id, timeframe);
+    
+    res.json(analytics);
   } catch (error) {
     console.error('Error fetching engagement analytics:', error);
     res.status(500).json({ message: 'Server error' });
@@ -335,6 +261,56 @@ router.get('/compare', protect, async (req, res) => {
     res.json({ comparisons });
   } catch (error) {
     console.error('Error fetching comparative analytics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get landing page analytics
+router.get('/landing-pages/:landingPageId', protect, async (req, res) => {
+  try {
+    const { timeframe = '30d' } = req.query;
+    
+    const analytics = await analyticsService.getLandingPageAnalytics(
+      req.user._id,
+      req.params.landingPageId,
+      timeframe
+    );
+    
+    res.json(analytics);
+  } catch (error) {
+    console.error('Error fetching landing page analytics:', error);
+    if (error.message === 'Landing page not found') {
+      return res.status(404).json({ message: 'Landing page not found' });
+    }
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get all landing pages analytics summary
+router.get('/landing-pages', protect, async (req, res) => {
+  try {
+    const { timeframe = '30d' } = req.query;
+    
+    const analytics = await analyticsService.getLandingPagesAnalytics(
+      req.user._id,
+      timeframe
+    );
+    
+    res.json(analytics);
+  } catch (error) {
+    console.error('Error fetching landing pages analytics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Engagement funnel
+router.get('/funnel', protect, async (req, res) => {
+  try {
+    const { timeframe = '30d' } = req.query;
+    const data = await analyticsService.getEngagementFunnel(req.user._id, timeframe);
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching engagement funnel:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });

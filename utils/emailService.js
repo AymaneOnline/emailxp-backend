@@ -153,7 +153,9 @@ class EmailService {
   addTrackingPixel(html, messageId) {
     if (!html) return html;
 
-    const trackingPixel = `<img src="${process.env.FRONTEND_URL || 'http://localhost:3000'}/api/track/open/${messageId}" width="1" height="1" style="display:none;" alt="" />`;
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    console.log('Generating tracking pixel with backendUrl:', backendUrl);
+    const trackingPixel = `<img src="${backendUrl}/api/track/open/${messageId}" width="1" height="1" style="display:none;" alt="" />`;
     
     // Try to insert before closing body tag, otherwise append
     if (html.includes('</body>')) {
@@ -164,26 +166,48 @@ class EmailService {
   }
 
   addClickTracking(html, messageId) {
-    if (!html) return html;
+    console.log('addClickTracking called with messageId:', messageId);
+    console.log('HTML input length:', html ? html.length : 'undefined');
+    
+    if (!html) {
+      console.log('No HTML provided, returning empty string');
+      return html;
+    }
+
+    console.log('Original HTML before click tracking:', html.substring(0, 500) + '...');
 
     // Replace all links with tracking links
     const linkRegex = /<a\s+(?:[^>]*?\s+)?href=(["'])(.*?)\1/gi;
     
-    return html.replace(linkRegex, (match, quote, url) => {
+    let matchCount = 0;
+    const result = html.replace(linkRegex, (match, quote, url) => {
+      matchCount++;
+      console.log(`Processing link ${matchCount}:`, match, 'URL:', url);
+      
       // Skip if already a tracking link or mailto/tel links
       if (url.includes('/api/track/click/') || url.startsWith('mailto:') || url.startsWith('tel:')) {
+        console.log('Skipping link (already tracked or special):', url);
         return match;
       }
 
-      const trackingUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/api/track/click/${messageId}?url=${encodeURIComponent(url)}`;
+      const trackingUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/track/click/${messageId}?url=${encodeURIComponent(url)}`;
+      console.log('Converting URL:', url, 'to tracking URL:', trackingUrl);
+      
       return match.replace(url, trackingUrl);
     });
+    
+    console.log('Total links processed:', matchCount);
+    console.log('Final HTML length:', result.length);
+    
+    return result;
   }
 
   async createTrackingRecord(trackingData) {
     try {
+      console.log('Creating EmailTracking record for campaign:', trackingData.campaign, 'messageId:', trackingData.messageId);
       const tracking = new EmailTracking(trackingData);
       await tracking.save();
+      console.log('EmailTracking record created successfully with ID:', tracking._id);
       return tracking;
     } catch (error) {
       console.error('Error creating tracking record:', error);
@@ -196,6 +220,14 @@ class EmailService {
       const tracking = await EmailTracking.findOne({ messageId });
       if (tracking) {
         await tracking.recordOpen(openData);
+        // Increment subscriber open stats
+        if (tracking.subscriber) {
+          const Subscriber = require('../models/Subscriber');
+          await Subscriber.findByIdAndUpdate(tracking.subscriber, {
+            $inc: { openCount: 1 },
+            $set: { lastOpenAt: new Date(), lastActivityAt: new Date() }
+          });
+        }
         return tracking;
       }
     } catch (error) {
@@ -208,6 +240,13 @@ class EmailService {
       const tracking = await EmailTracking.findOne({ messageId });
       if (tracking) {
         await tracking.recordClick(clickData);
+        if (tracking.subscriber) {
+          const Subscriber = require('../models/Subscriber');
+            await Subscriber.findByIdAndUpdate(tracking.subscriber, {
+              $inc: { clickCount: 1 },
+              $set: { lastClickAt: new Date(), lastActivityAt: new Date() }
+            });
+        }
         return tracking;
       }
     } catch (error) {
@@ -322,10 +361,8 @@ class EmailService {
       switch (provider) {
         case 'sendgrid':
           return this.handleSendGridWebhook(payload);
-        case 'mailgun':
-          return this.handleMailgunWebhook(payload);
-        case 'ses':
-          return this.handleSESWebhook(payload);
+        case 'resend':
+          return this.handleResendWebhook(payload);
         default:
           console.log('Unknown webhook provider:', provider);
       }
@@ -365,6 +402,40 @@ class EmailService {
           await this.recordUnsubscribe(messageId);
           break;
       }
+    }
+  }
+
+  async handleResendWebhook(payload) {
+    // Basic Resend webhook handling
+    // Resend webhook format may differ from SendGrid
+    const { type, data } = payload;
+    const messageId = data?.email_id;
+    
+    if (!messageId) return;
+    
+    switch (type) {
+      case 'email.delivered':
+        await this.updateTrackingStatus(messageId, 'delivered');
+        break;
+      case 'email.opened':
+        await this.recordOpen(messageId, {
+          userAgent: data?.user_agent,
+          ipAddress: data?.ip_address
+        });
+        break;
+      case 'email.clicked':
+        await this.recordClick(messageId, {
+          url: data?.link?.url,
+          userAgent: data?.user_agent,
+          ipAddress: data?.ip_address
+        });
+        break;
+      case 'email.bounced':
+        await this.recordBounce(messageId, {
+          type: data?.bounce?.type,
+          reason: data?.bounce?.reason
+        });
+        break;
     }
   }
 

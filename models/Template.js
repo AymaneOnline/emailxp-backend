@@ -53,6 +53,11 @@ const templateSchema = new mongoose.Schema({
     type: String,
     required: false // Will be generated from structure
   },
+  // Unlayer design object for email editor
+  emailDesign: {
+    type: Object,
+    default: null
+  },
   // Plain text version
   plainTextContent: {
     type: String
@@ -255,6 +260,22 @@ templateSchema.methods.generateHTML = function() {
         const text = block.content?.text || '';
         const align = block.content?.align || 'center';
         html += `<div class="block" style="text-align: ${align}; ${stylesStr}">${text}</div>`;
+        break;
+      }
+      // Handle dynamic content blocks
+      case 'dynamic': {
+        // For dynamic content blocks, we'll add special markers that will be replaced during sending
+        const conditions = block.conditions || [];
+        const defaultContent = block.defaultContent || '';
+        const variable = block.variable || 'name';
+        
+        // Create a container for dynamic content with data attributes for conditions
+        html += `
+          <div class="dynamic-content-block block" style="${stylesStr}" data-dynamic-content="${block.id}" data-variable="${variable}">
+            <!-- Dynamic content will be personalized during send -->
+            <div class="dynamic-default-content">${defaultContent}</div>
+          </div>
+        `;
         break;
       }
       default: {
