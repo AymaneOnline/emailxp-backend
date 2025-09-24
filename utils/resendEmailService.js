@@ -26,7 +26,7 @@ console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_
  * @returns {string} HTML with unsubscribe footer added
  */
 const addUnsubscribeFooter = (html, subscriberId, campaignId) => {
-    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
     const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${subscriberId}${campaignId ? `/${campaignId}` : ''}`;
 
     const footerHtml = `
