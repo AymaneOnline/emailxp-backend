@@ -21,6 +21,13 @@ router.get('/open/:messageId', async (req, res) => {
     // Also create OpenEvent document if tracking exists
     if (tracking) {
       const OpenEvent = require('../models/OpenEvent');
+
+      // Check if this is the first open for this subscriber-campaign combination
+      const existingOpen = await OpenEvent.findOne({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber
+      });
+
       await OpenEvent.create({
         campaign: tracking.campaign,
         subscriber: tracking.subscriber,
@@ -29,12 +36,6 @@ router.get('/open/:messageId', async (req, res) => {
         userAgent: userAgent
       });
       console.log('OpenEvent created for messageId:', messageId);
-
-      // Check if this is the first open for this subscriber-campaign combination
-      const existingOpen = await OpenEvent.findOne({
-        campaign: tracking.campaign,
-        subscriber: tracking.subscriber
-      });
 
       // Update campaign open count only if this is the first open
       if (!existingOpen) {
@@ -106,6 +107,13 @@ router.get('/click/:messageId', async (req, res) => {
     // Also create ClickEvent document if tracking exists
     if (tracking) {
       const ClickEvent = require('../models/ClickEvent');
+
+      // Check if this is the first click for this subscriber-campaign combination
+      const existingClick = await ClickEvent.findOne({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber
+      });
+
       await ClickEvent.create({
         campaign: tracking.campaign,
         subscriber: tracking.subscriber,
@@ -115,12 +123,6 @@ router.get('/click/:messageId', async (req, res) => {
         userAgent: userAgent
       });
       console.log('ClickEvent created for messageId:', messageId);
-
-      // Check if this is the first click for this subscriber-campaign combination
-      const existingClick = await ClickEvent.findOne({
-        campaign: tracking.campaign,
-        subscriber: tracking.subscriber
-      });
 
       // Update campaign click count only if this is the first click
       if (!existingClick) {

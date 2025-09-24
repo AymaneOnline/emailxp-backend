@@ -36,6 +36,12 @@ exports.trackOpen = async (req, res) => {
             logger.warn(`[Tracking] Subscriber ${subscriberId} not found for open tracking. Event will still be logged.`);
         }
 
+        // Check if this is the first open for this subscriber-campaign combination
+        const existingOpen = await OpenEvent.findOne({
+            campaign: campaignId,
+            subscriber: subscriberId
+        });
+
         // Create a new OpenEvent document
         await OpenEvent.create({
             campaign: campaignId,
@@ -45,12 +51,6 @@ exports.trackOpen = async (req, res) => {
             userAgent: userAgent
         });
         logger.log(`[Tracking] OpenEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
-
-        // Check if this is the first open for this subscriber-campaign combination
-        const existingOpen = await OpenEvent.findOne({
-            campaign: campaignId,
-            subscriber: subscriberId
-        });
 
         // Only increment campaign open counter if this is the first open
         if (campaign && !existingOpen) {
@@ -111,6 +111,12 @@ exports.trackClick = async (req, res) => {
             logger.warn(`[Tracking] Subscriber ${subscriberId} not found for click tracking. Event will still be logged.`);
         }
 
+        // Check if this is the first click for this subscriber-campaign combination
+        const existingClick = await ClickEvent.findOne({
+            campaign: campaignId,
+            subscriber: subscriberId
+        });
+
         // Create a new ClickEvent document
         await ClickEvent.create({
             campaign: campaignId,
@@ -121,12 +127,6 @@ exports.trackClick = async (req, res) => {
             userAgent: userAgent
         });
         logger.log(`[Tracking] ClickEvent created for Campaign ${campaignId}, Subscriber ${subscriberId}.`);
-
-        // Check if this is the first click for this subscriber-campaign combination
-        const existingClick = await ClickEvent.findOne({
-            campaign: campaignId,
-            subscriber: subscriberId
-        });
 
         // Only increment campaign click counter if this is the first click
         if (campaign && !existingClick) {
