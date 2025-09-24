@@ -121,17 +121,16 @@ app.get('/api/groups/test', (req, res) => {
 // - Otherwise return a small HTML or JSON welcome page.
 app.get('/', (req, res) => {
     const frontend = process.env.FRONTEND_URL;
-    if (process.env.NODE_ENV === 'production' && frontend) {
-        return res.redirect(frontend);
-    }
 
-    // For browsers prefer an HTML response; otherwise JSON
+    // Do not perform an automatic redirect. Returning a small HTML page or JSON
+    // is safer for debugging and avoids surprising redirects when a client
+    // expects API JSON (for example: curl or health checks).
     if (req.accepts('html')) {
         const link = frontend || '/api/status';
         return res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"><title>EmailXP Backend</title></head><body><h1>EmailXP Backend API</h1><p>API status: <a href="/api/status">/api/status</a></p><p>Frontend: <a href="${link}">${link}</a></p></body></html>`);
     }
 
-    return res.status(200).json({ message: 'Welcome to the EmailXP Backend API', frontendUrl: frontend || null });
+    return res.status(200).json({ message: 'EmailXP Backend API', frontendUrl: frontend || null, requestId: req.requestId });
 });
 
 // Public landing page routes
