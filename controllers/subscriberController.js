@@ -162,7 +162,7 @@ const getSubscribers = asyncHandler(async (req, res) => {
     console.log('User ID:', req.user.id);
 
     // Build query for user's subscribers
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, isDeleted: false };
 
     if (groupId && mongoose.Types.ObjectId.isValid(groupId)) {
         query.groups = groupId;
@@ -240,7 +240,7 @@ const getSubscribersByGroup = asyncHandler(async (req, res) => {
         throw new Error('Group not found');
     }
 
-    const query = { groups: groupId, user: req.user.id };
+    const query = { groups: groupId, user: req.user.id, isDeleted: false };
 
     // Default to excluding unsubscribed users unless status filter is explicitly provided
     if (status) {
@@ -387,7 +387,8 @@ const createSubscriber = asyncHandler(async (req, res) => {
     // Check if subscriber already exists for this user
     const existingSubscriber = await Subscriber.findOne({
         email: email.toLowerCase(),
-        user: req.user.id
+        user: req.user.id,
+        isDeleted: false
     });
 
     if (existingSubscriber) {
@@ -552,7 +553,8 @@ const updateSubscriber = asyncHandler(async (req, res) => {
         const existingSubscriber = await Subscriber.findOne({
             email: email.toLowerCase(),
             user: req.user.id,
-            _id: { $ne: id }
+            _id: { $ne: id },
+            isDeleted: false
         });
 
         if (existingSubscriber) {
@@ -683,7 +685,8 @@ const bulkImportSubscribers = asyncHandler(async (req, res) => {
     const existingEmails = new Map(
         (await Subscriber.find({ 
             user: req.user.id,
-            email: { $in: subscribers.map(s => s.email.toLowerCase()) }
+            email: { $in: subscribers.map(s => s.email.toLowerCase()) },
+            isDeleted: false
     }).select('email')).map(s => [s.email, s])
     );
 
@@ -829,7 +832,7 @@ const bulkImportSubscribers = asyncHandler(async (req, res) => {
 // @access  Private
 const getSubscriberStats = asyncHandler(async (req, res) => {
     const stats = await Subscriber.getStats(req.user.id);
-    const total = await Subscriber.countDocuments({ user: req.user.id });
+    const total = await Subscriber.countDocuments({ user: req.user.id, isDeleted: false });
 
     const formattedStats = {
         total,
