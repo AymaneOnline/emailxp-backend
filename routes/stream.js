@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
 const analyticsService = require('../services/analyticsService');
 const { summary } = require('../services/deliverabilityMetricsService');
@@ -31,7 +32,6 @@ router.get('/', async (req, res) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       if (decoded.type !== 'sse') throw new Error('Invalid token type');
       // Get user
-      const User = require('../models/User');
       user = await User.findById(decoded.id).select('-password');
       if (!user) throw new Error('User not found');
     } catch (error) {
@@ -45,7 +45,6 @@ router.get('/', async (req, res) => {
     try {
       const authToken = req.headers.authorization.split(' ')[1];
       const decoded = jwt.verify(authToken, process.env.JWT_SECRET);
-      const User = require('../models/User');
       user = await User.findById(decoded.id).select('-password');
       if (!user) throw new Error('User not found');
     } catch (error) {
