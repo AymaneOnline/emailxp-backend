@@ -244,8 +244,9 @@ class SimpleEmailQueue {
   async processSendEmail({ emailData, campaignId, subscriberId }) {
     try {
       const idempotencyKey = crypto.createHash('sha256').update(`${campaignId}:${subscriberId}:${emailData.subject || ''}`).digest('hex');
+      // Only treat as duplicate if existing log has non-failed status
       const existing = await EmailLog.findOne({ idempotencyKey });
-      if (existing) {
+      if (existing && existing.status && existing.status !== 'failed') {
         logger.warn('Duplicate send prevented (simple queue)', { campaignId, subscriberId, email: emailData.to });
         return { duplicate: true, messageId: existing.messageId };
       }

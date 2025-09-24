@@ -102,8 +102,9 @@ class EmailQueueService {
       try {
         const { emailData, campaignId, subscriberId } = job.data;
         const idempotencyKey = crypto.createHash('sha256').update(`${campaignId}:${subscriberId}:${emailData.subject || ''}`).digest('hex');
+        // Only treat as duplicate if a prior successful/queued/delivered record exists.
         const existing = await EmailLog.findOne({ idempotencyKey });
-        if (existing) {
+        if (existing && existing.status && existing.status !== 'failed') {
           console.log(`⏭️ Duplicate send prevented for ${emailData.to}`);
           return { duplicate: true, messageId: existing.messageId };
         }
@@ -438,7 +439,7 @@ class EmailQueueService {
         
         return this.addEmailToQueue({
           to: subscriber.email, // Send to actual subscriber email
-          from: fromEmail || 'onboarding@resend.dev', // Use campaign's fromEmail or fallback to Resend verified sender
+          from: fromEmail || process.env.EMAIL_FROM || 'onboarding@resend.dev', // Prefer configured EMAIL_FROM
           fromName: fromName, // Include the fromName
           subject: this.personalizeSubject(subject, subscriber),
           html: personalizedContent,

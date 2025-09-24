@@ -96,7 +96,7 @@ emailQueue.process('send-campaign-batch', 5, async (job) => {
         campaignId,
         subscriberId: subscriber._id,
         groupId: job.data.groupId,
-        fromEmail: 'onboarding@resend.dev', // Use Resend verified sender
+  fromEmail: process.env.EMAIL_FROM || 'onboarding@resend.dev', // Use configured EMAIL_FROM if available
         fromName: 'EmailXP',
       }, {
         delay: 0, // No delay for batch processing
