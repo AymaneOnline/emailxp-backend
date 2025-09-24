@@ -3,6 +3,7 @@ const asyncHandler = require('express-async-handler');
 const { protect } = require('../middleware/authMiddleware');
 const { domainVerificationLimiter, domainCreationLimiter } = require('../middleware/rateLimitMiddleware');
 const domainAuthService = require('../services/domainAuthService');
+const cloudflareService = require('../services/cloudflareService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -179,6 +180,61 @@ router.delete('/:id', protect, asyncHandler(async (req, res) => {
     req.user.organization
   );
   res.json(result);
+}));
+
+// POST /api/sending-domains/:id/cloudflare-setup - Setup DNS via Cloudflare API
+router.post('/:id/cloudflare-setup', protect, asyncHandler(async (req, res) => {
+  const { apiToken } = req.body;
+
+  if (!apiToken) {
+    res.status(400);
+    throw new Error('Cloudflare API token is required');
+  }
+
+  const domain = await domainAuthService.getDomain(req.params.id);
+  if (!domain) {
+    res.status(404);
+    throw new Error('Domain not found');
+  }
+
+  // Check ownership
+  if (domain.organization && domain.organization.toString() !== req.user.organization) {
+    res.status(403);
+    throw new Error('Unauthorized to modify this domain');
+  }
+  if (!domain.organization && domain.user.toString() !== req.user._id) {
+    res.status(403);
+    throw new Error('Unauthorized to modify this domain');
+  }
+
+  // Validate API token
+  const isValidToken = await cloudflareService.validateToken(apiToken);
+  if (!isValidToken) {
+    res.status(400);
+    throw new Error('Invalid Cloudflare API token');
+  }
+
+  // Build DNS records
+  const dnsRecords = {
+    dkim: domainAuthService.buildDkimRecord(domain),
+    spf: domainAuthService.buildSpfRecord(domain.domain),
+    tracking: domainAuthService.buildTrackingCname(domain)
+  };
+
+  // Setup DNS via Cloudflare API
+  const result = await cloudflareService.setupDomainDNS(apiToken, domain.domain, dnsRecords);
+
+  if (result.success) {
+    res.json({
+      success: true,
+      message: `Successfully created ${result.createdRecords} DNS records in Cloudflare`,
+      zoneId: result.zoneId,
+      recordsCreated: result.createdRecords
+    });
+  } else {
+    res.status(400);
+    throw new Error(result.error);
+  }
 }));
 
 module.exports = router;
