@@ -1040,6 +1040,106 @@ const exportSelectedSubscribers = asyncHandler(async (req, res) => {
     return res.status(200).send(csv);
 });
 
+// @desc    Unsubscribe subscriber from all campaigns
+// @route   POST /api/subscribers/unsubscribe
+// @access  Public (no auth required for unsubscribe links)
+const unsubscribeSubscriber = asyncHandler(async (req, res) => {
+    const { email, campaignId, subscriberId } = req.body;
+
+    if (!email && !subscriberId) {
+        res.status(400);
+        throw new Error('Email or subscriber ID is required');
+    }
+
+    let subscriber;
+    if (subscriberId) {
+        if (!mongoose.Types.ObjectId.isValid(subscriberId)) {
+            res.status(400);
+            throw new Error('Invalid subscriber ID');
+        }
+        subscriber = await Subscriber.findById(subscriberId);
+    } else {
+        subscriber = await Subscriber.findOne({ email: email.toLowerCase() });
+    }
+
+    if (!subscriber) {
+        // Return success even if subscriber not found to prevent email enumeration
+        return res.status(200).json({
+            success: true,
+            message: 'Successfully unsubscribed'
+        });
+    }
+
+    // Mark as unsubscribed
+    subscriber.status = 'unsubscribed';
+    subscriber.unsubscribedAt = new Date();
+    await subscriber.save();
+
+    // Log the unsubscribe event if campaignId is provided
+    if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
+        // You could add an UnsubscribeEvent model here if needed for tracking
+        console.log(`Subscriber ${subscriber._id} unsubscribed from campaign ${campaignId}`);
+    }
+
+    res.status(200).json({
+        success: true,
+        message: 'Successfully unsubscribed'
+    });
+});
+
+// @desc    Handle unsubscribe link clicks (GET request for email links)
+// @route   GET /api/subscribers/unsubscribe/:subscriberId/:campaignId?
+// @access  Public
+const handleUnsubscribeLink = asyncHandler(async (req, res) => {
+    const { subscriberId, campaignId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(subscriberId)) {
+        return res.status(400).send('Invalid unsubscribe link');
+    }
+
+    const subscriber = await Subscriber.findById(subscriberId);
+    if (!subscriber) {
+        return res.status(200).send('Successfully unsubscribed');
+    }
+
+    // Mark as unsubscribed
+    subscriber.status = 'unsubscribed';
+    subscriber.unsubscribedAt = new Date();
+    await subscriber.save();
+
+    // Log the unsubscribe event
+    if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
+        console.log(`Subscriber ${subscriber._id} unsubscribed via link from campaign ${campaignId}`);
+    }
+
+    // Return a simple HTML page confirming unsubscribe
+    res.status(200).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Unsubscribed</title>
+            <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f5f5f5; }
+                .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                h1 { color: #333; margin-bottom: 20px; }
+                p { color: #666; line-height: 1.6; }
+                .footer { margin-top: 30px; font-size: 12px; color: #999; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>You've been unsubscribed</h1>
+                <p>You will no longer receive emails from this sender.</p>
+                <p>If you change your mind, you can always resubscribe through our website.</p>
+                <div class="footer">
+                    <p>Powered by <strong>EmailXP</strong></p>
+                </div>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
 function escapeCsv(value) {
     if (value == null) return '';
     const str = String(value);
@@ -1052,3 +1152,5 @@ function escapeCsv(value) {
 // Re-export with new handlers (keeping existing export behavior)
 module.exports.bulkUpdateSubscriberStatus = bulkUpdateSubscriberStatus;
 module.exports.exportSelectedSubscribers = exportSelectedSubscribers;
+module.exports.unsubscribeSubscriber = unsubscribeSubscriber;
+module.exports.handleUnsubscribeLink = handleUnsubscribeLink;

@@ -17,7 +17,9 @@ const {
     confirmSubscriber,
     resendConfirmation,
     bulkUpdateSubscriberStatus,
-    exportSelectedSubscribers
+    exportSelectedSubscribers,
+    unsubscribeSubscriber,
+    handleUnsubscribeLink
 } = require('../controllers/subscriberController');
 const { protect } = require('../middleware/authMiddleware');
 const {
@@ -25,6 +27,9 @@ const {
     validateSubscriberUpdate
 } = require('../middleware/subscriberValidation');
 const validateBulkImport = require('../middleware/bulkImportValidation');
+
+// Public unsubscribe endpoint (for email links)
+router.get('/unsubscribe/:subscriberId/:campaignId?', handleUnsubscribeLink);
 
 // Public confirmation endpoint
 router.get('/confirm/:token', confirmSubscriber);
@@ -73,5 +78,8 @@ router.delete('/:id/groups/:groupId', removeSubscriberFromGroup);
 
 // Resend confirmation
 router.post('/:id/resend-confirmation', resendConfirmation);
+
+// Unsubscribe endpoint (protected API route)
+router.post('/unsubscribe', unsubscribeSubscriber);
 
 module.exports = router;
