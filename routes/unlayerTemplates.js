@@ -5,7 +5,21 @@ const router = express.Router();
 const unlayerService = require('../services/unlayerService');
 const { protect } = require('../middleware/authMiddleware');
 
-// Protect all Unlayer template routes
+// Health check endpoint (public - no auth required)
+router.get('/health/check', async (req, res) => {
+  try {
+    const health = await unlayerService.healthCheck();
+    res.json(health);
+  } catch (error) {
+    res.status(500).json({ 
+      configured: false, 
+      working: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Protect all other Unlayer template routes
 router.use(protect);
 
 // Get all Unlayer templates
@@ -178,20 +192,6 @@ router.delete('/:id', async (req, res) => {
     console.error('Error deleting template:', error);
     res.status(500).json({ 
       message: 'Failed to delete template',
-      error: error.message 
-    });
-  }
-});
-
-// Health check endpoint
-router.get('/health/check', async (req, res) => {
-  try {
-    const health = await unlayerService.healthCheck();
-    res.json(health);
-  } catch (error) {
-    res.status(500).json({ 
-      configured: false, 
-      working: false, 
       error: error.message 
     });
   }
