@@ -5,6 +5,8 @@ const Campaign = require('../models/Campaign');
 const Template = require('../models/Template');
 const Subscriber = require('../models/Subscriber');
 const EmailTracking = require('../models/EmailTracking');
+const OpenEvent = require('../models/OpenEvent');
+const ClickEvent = require('../models/ClickEvent');
 const mongoose = require('mongoose');
 const LandingPage = require('../models/LandingPage');
 const FormSubmission = require('../models/FormSubmission');
@@ -1073,72 +1075,151 @@ class AnalyticsService {
     try {
       const { periodStart } = this.getTimeframeDates(timeframe);
       
-      // Aggregate all campaign analytics for the user
-      const pipeline = [
+      // Get sent/delivered from EmailTracking
+      const trackingPipeline = [
         {
           $match: {
-            user: new mongoose.Types.ObjectId(userId),
-            entityType: 'Campaign',
-            periodStart: { $gte: periodStart }
+            sentAt: { $gte: periodStart }
+          }
+        },
+        {
+          $lookup: {
+            from: 'campaigns',
+            localField: 'campaign',
+            foreignField: '_id',
+            as: 'campaign'
+          }
+        },
+        {
+          $unwind: '$campaign'
+        },
+        {
+          $match: {
+            'campaign.user': new mongoose.Types.ObjectId(userId)
           }
         },
         {
           $group: {
             _id: null,
-            totalSent: { $sum: '$metrics.sent' },
-            totalDelivered: { $sum: '$metrics.delivered' },
-            totalUniqueOpens: { $sum: '$metrics.uniqueOpens' },
-            totalUniqueClicks: { $sum: '$metrics.uniqueClicks' },
-            totalUnsubscribes: { $sum: '$metrics.unsubscribes' },
-            totalBounces: { $sum: '$metrics.bounces' },
-            totalComplaints: { $sum: '$metrics.complaints' }
+            totalSent: { $sum: 1 },
+            totalDelivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+            totalBounces: { $sum: { $cond: [{ $eq: ['$status', 'bounced'] }, 1, 0] } },
+            totalUnsubscribes: { $sum: { $cond: [{ $eq: ['$status', 'unsubscribed'] }, 1, 0] } }
           }
         }
       ];
 
-      const result = await Analytics.aggregate(pipeline);
-      
-      const data = result[0] || {
+      const trackingResult = await EmailTracking.aggregate(trackingPipeline);
+      const trackingData = trackingResult[0] || {
         totalSent: 0,
         totalDelivered: 0,
-        totalUniqueOpens: 0,
-        totalUniqueClicks: 0,
-        totalUnsubscribes: 0,
         totalBounces: 0,
-        totalComplaints: 0
+        totalUnsubscribes: 0
       };
 
-      // Calculate rates
-      const openRate = data.totalSent > 0 ? (data.totalUniqueOpens / data.totalSent) * 100 : 0;
-      const clickRate = data.totalSent > 0 ? (data.totalUniqueClicks / data.totalSent) * 100 : 0;
-      const unsubRate = data.totalSent > 0 ? (data.totalUnsubscribes / data.totalSent) * 100 : 0;
-      const bounceRate = data.totalSent > 0 ? (data.totalBounces / data.totalSent) * 100 : 0;
-      const complaintRate = data.totalSent > 0 ? (data.totalComplaints / data.totalSent) * 100 : 0;
+      // Get opens from OpenEvent
+      const openPipeline = [
+        {
+          $match: {
+            timestamp: { $gte: periodStart }
+          }
+        },
+        {
+          $lookup: {
+            from: 'campaigns',
+            localField: 'campaign',
+            foreignField: '_id',
+            as: 'campaign'
+          }
+        },
+        {
+          $unwind: '$campaign'
+        },
+        {
+          $match: {
+            'campaign.user': new mongoose.Types.ObjectId(userId)
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalUniqueOpens: { $addToSet: '$subscriber' }
+          }
+        },
+        {
+          $project: {
+            totalUniqueOpens: { $size: '$totalUniqueOpens' }
+          }
+        }
+      ];
 
-      // Get top campaigns
-      const topCampaigns = await Analytics.find({
-        user: new mongoose.Types.ObjectId(userId),
-        entityType: 'Campaign',
-        periodStart: { $gte: periodStart }
-      })
-      .populate('entityId', 'name subject')
-      .sort({ 'metrics.sent': -1 })
-      .limit(5)
-      .then(analytics => analytics.map(a => ({
-        campaign: a.entityId,
-        metrics: a.metrics,
-        rates: a.rates
-      })));
+      const openResult = await OpenEvent.aggregate(openPipeline);
+      const openData = openResult[0] || { totalUniqueOpens: 0 };
+
+      // Get clicks from ClickEvent
+      const clickPipeline = [
+        {
+          $match: {
+            timestamp: { $gte: periodStart }
+          }
+        },
+        {
+          $lookup: {
+            from: 'campaigns',
+            localField: 'campaign',
+            foreignField: '_id',
+            as: 'campaign'
+          }
+        },
+        {
+          $unwind: '$campaign'
+        },
+        {
+          $match: {
+            'campaign.user': new mongoose.Types.ObjectId(userId)
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalUniqueClicks: { $addToSet: '$subscriber' }
+          }
+        },
+        {
+          $project: {
+            totalUniqueClicks: { $size: '$totalUniqueClicks' }
+          }
+        }
+      ];
+
+      const clickResult = await ClickEvent.aggregate(clickPipeline);
+      const clickData = clickResult[0] || { totalUniqueClicks: 0 };
+
+      // Calculate rates
+      const openRate = trackingData.totalDelivered > 0 ? (openData.totalUniqueOpens / trackingData.totalDelivered) * 100 : 0;
+      const clickRate = trackingData.totalDelivered > 0 ? (clickData.totalUniqueClicks / trackingData.totalDelivered) * 100 : 0;
+      const unsubRate = trackingData.totalDelivered > 0 ? (trackingData.totalUnsubscribes / trackingData.totalDelivered) * 100 : 0;
+      const bounceRate = trackingData.totalSent > 0 ? (trackingData.totalBounces / trackingData.totalSent) * 100 : 0;
+
+      // Get top campaigns (simplified)
+      const topCampaigns = await Campaign.find({ user: userId })
+        .sort({ sentAt: -1 })
+        .limit(5)
+        .then(campaigns => campaigns.map(c => ({
+          campaign: { _id: c._id, name: c.name, subject: c.subject },
+          metrics: { sent: c.totalRecipients || 0 },
+          rates: {}
+        })));
 
       return {
         overview: {
-          totalSent: data.totalSent,
-          totalDelivered: data.totalDelivered,
+          totalSent: trackingData.totalSent,
+          totalDelivered: trackingData.totalDelivered,
           openRate: Math.round(openRate * 10) / 10,
           clickRate: Math.round(clickRate * 10) / 10,
           unsubRate: Math.round(unsubRate * 100) / 100,
           bounceRate: Math.round(bounceRate * 10) / 10,
-          complaintRate: Math.round(complaintRate * 10) / 10
+          complaintRate: 0 // Not implemented yet
         },
         topCampaigns
       };
