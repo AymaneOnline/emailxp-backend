@@ -11,12 +11,12 @@ router.post('/', protect, asyncHandler(async (req, res) => {
   if (!domain) {
     res.status(400); throw new Error('Domain is required');
   }
-  const record = await domainAuthService.createDomain({ domain, organization: req.user.organization, user: req.user._id });
+  const record = await domainAuthService.createDomain({ domain, organization: req.user.organization || null, user: req.user._id });
   res.status(201).json({ domain: record.domain, dkim: domainAuthService.buildDkimRecord(record), spf: domainAuthService.buildSpfRecord(record.domain), tracking: domainAuthService.buildTrackingCname(record), status: record.status, id: record._id, isPrimary: record.isPrimary });
 }));
 
 router.get('/', protect, asyncHandler(async (req, res) => {
-  const list = await domainAuthService.listDomains({ organization: req.user.organization });
+  const list = await domainAuthService.listDomains({ organization: req.user.organization || null });
   res.json(list.map(d => ({ _id: d._id, domain: d.domain, status: d.status, dkimVerified: d.dkimVerified, spfVerified: d.spfVerified, trackingVerified: d.trackingVerified, lastCheckedAt: d.lastCheckedAt, isPrimary: d.isPrimary })));
 }));
 

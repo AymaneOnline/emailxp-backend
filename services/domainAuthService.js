@@ -29,15 +29,22 @@ class DomainAuthService {
     }
     const selector = 'dkim1';
     const { publicKey, privateKey } = generateDkimKeyPair();
-    const record = await DomainAuthentication.create({
-      domain,
-      organization: organization || null,
-      user: user || null,
-      dkim: { selector, publicKey, privateKey },
-      verificationTokens: { tracking: crypto.randomBytes(6).toString('hex') },
-      bounceToken: crypto.randomBytes(8).toString('hex')
-    });
-    return record;
+    try {
+      const record = await DomainAuthentication.create({
+        domain,
+        organization: organization || null,
+        user: user || null,
+        dkim: { selector, publicKey, privateKey },
+        verificationTokens: { tracking: crypto.randomBytes(6).toString('hex') },
+        bounceToken: crypto.randomBytes(8).toString('hex')
+      });
+      return record;
+    } catch (error) {
+      if (error.code === 11000) {
+        throw new Error('This domain is already registered');
+      }
+      throw error;
+    }
   }
 
   async listDomains(filter = {}) {
