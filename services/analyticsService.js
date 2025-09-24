@@ -1075,8 +1075,8 @@ class AnalyticsService {
     try {
       const { periodStart } = this.getTimeframeDates(timeframe);
       
-      // Get sent/delivered from EmailTracking
-      const trackingPipeline = [
+      // Aggregate from EmailTracking with embedded opens/clicks
+      const pipeline = [
         {
           $match: {
             sentAt: { $gte: periodStart }
@@ -1102,104 +1102,47 @@ class AnalyticsService {
           $group: {
             _id: null,
             totalSent: { $sum: 1 },
-            totalDelivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+            totalDelivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'sent']] }, 1, 0] } },
+            totalOpens: { $sum: { $size: { $ifNull: ['$opens', []] } } },
+            totalClicks: { $sum: { $size: { $ifNull: ['$clicks', []] } } },
+            uniqueOpeners: { $addToSet: { $cond: [{ $gt: [{ $size: { $ifNull: ['$opens', []] } }, 0] }, '$subscriber', null] } },
+            uniqueClickers: { $addToSet: { $cond: [{ $gt: [{ $size: { $ifNull: ['$clicks', []] } }, 0] }, '$subscriber', null] } },
             totalBounces: { $sum: { $cond: [{ $eq: ['$status', 'bounced'] }, 1, 0] } },
             totalUnsubscribes: { $sum: { $cond: [{ $eq: ['$status', 'unsubscribed'] }, 1, 0] } }
+          }
+        },
+        {
+          $project: {
+            totalSent: 1,
+            totalDelivered: 1,
+            totalOpens: 1,
+            totalClicks: 1,
+            uniqueOpens: { $size: { $filter: { input: '$uniqueOpeners', cond: { $ne: ['$$this', null] } } } },
+            uniqueClicks: { $size: { $filter: { input: '$uniqueClickers', cond: { $ne: ['$$this', null] } } } },
+            totalBounces: 1,
+            totalUnsubscribes: 1
           }
         }
       ];
 
-      const trackingResult = await EmailTracking.aggregate(trackingPipeline);
-      const trackingData = trackingResult[0] || {
+      const result = await EmailTracking.aggregate(pipeline);
+      
+      const data = result[0] || {
         totalSent: 0,
         totalDelivered: 0,
+        totalOpens: 0,
+        totalClicks: 0,
+        uniqueOpens: 0,
+        uniqueClicks: 0,
         totalBounces: 0,
         totalUnsubscribes: 0
       };
 
-      // Get opens from OpenEvent
-      const openPipeline = [
-        {
-          $match: {
-            timestamp: { $gte: periodStart }
-          }
-        },
-        {
-          $lookup: {
-            from: 'campaigns',
-            localField: 'campaign',
-            foreignField: '_id',
-            as: 'campaign'
-          }
-        },
-        {
-          $unwind: '$campaign'
-        },
-        {
-          $match: {
-            'campaign.user': new mongoose.Types.ObjectId(userId)
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            totalUniqueOpens: { $addToSet: '$subscriber' }
-          }
-        },
-        {
-          $project: {
-            totalUniqueOpens: { $size: '$totalUniqueOpens' }
-          }
-        }
-      ];
-
-      const openResult = await OpenEvent.aggregate(openPipeline);
-      const openData = openResult[0] || { totalUniqueOpens: 0 };
-
-      // Get clicks from ClickEvent
-      const clickPipeline = [
-        {
-          $match: {
-            timestamp: { $gte: periodStart }
-          }
-        },
-        {
-          $lookup: {
-            from: 'campaigns',
-            localField: 'campaign',
-            foreignField: '_id',
-            as: 'campaign'
-          }
-        },
-        {
-          $unwind: '$campaign'
-        },
-        {
-          $match: {
-            'campaign.user': new mongoose.Types.ObjectId(userId)
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            totalUniqueClicks: { $addToSet: '$subscriber' }
-          }
-        },
-        {
-          $project: {
-            totalUniqueClicks: { $size: '$totalUniqueClicks' }
-          }
-        }
-      ];
-
-      const clickResult = await ClickEvent.aggregate(clickPipeline);
-      const clickData = clickResult[0] || { totalUniqueClicks: 0 };
-
       // Calculate rates
-      const openRate = trackingData.totalDelivered > 0 ? (openData.totalUniqueOpens / trackingData.totalDelivered) * 100 : 0;
-      const clickRate = trackingData.totalDelivered > 0 ? (clickData.totalUniqueClicks / trackingData.totalDelivered) * 100 : 0;
-      const unsubRate = trackingData.totalDelivered > 0 ? (trackingData.totalUnsubscribes / trackingData.totalDelivered) * 100 : 0;
-      const bounceRate = trackingData.totalSent > 0 ? (trackingData.totalBounces / trackingData.totalSent) * 100 : 0;
+      const openRate = data.totalDelivered > 0 ? (data.uniqueOpens / data.totalDelivered) * 100 : 0;
+      const clickRate = data.totalDelivered > 0 ? (data.uniqueClicks / data.totalDelivered) * 100 : 0;
+      const unsubRate = data.totalDelivered > 0 ? (data.totalUnsubscribes / data.totalDelivered) * 100 : 0;
+      const bounceRate = data.totalSent > 0 ? (data.totalBounces / data.totalSent) * 100 : 0;
 
       // Get top campaigns (simplified)
       const topCampaigns = await Campaign.find({ user: userId })
@@ -1213,8 +1156,8 @@ class AnalyticsService {
 
       return {
         overview: {
-          totalSent: trackingData.totalSent,
-          totalDelivered: trackingData.totalDelivered,
+          totalSent: data.totalSent,
+          totalDelivered: data.totalDelivered,
           openRate: Math.round(openRate * 10) / 10,
           clickRate: Math.round(clickRate * 10) / 10,
           unsubRate: Math.round(unsubRate * 100) / 100,
