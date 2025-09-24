@@ -27,8 +27,9 @@ const organizationSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'Organization email is required'],
+    // Allow common valid email forms including + and longer TLDs
     match: [
-      /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+      /^\S+@\S+\.\S+$/,
       'Please provide a valid email'
     ]
   },
