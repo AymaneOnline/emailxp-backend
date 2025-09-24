@@ -1094,8 +1094,8 @@ class AnalyticsService {
       };
 
       // Calculate rates
-      const openRate = data.totalDelivered > 0 ? (data.totalOpens / data.totalDelivered) * 100 : 0;
-      const clickRate = data.totalDelivered > 0 ? (data.totalClicks / data.totalDelivered) * 100 : 0;
+      const openRate = data.totalDelivered > 0 ? (data.uniqueOpens / data.totalDelivered) * 100 : 0;
+      const clickRate = data.totalDelivered > 0 ? (data.uniqueClicks / data.totalDelivered) * 100 : 0;
       const unsubRate = data.totalDelivered > 0 ? (data.totalUnsubscribes / data.totalDelivered) * 100 : 0;
       const bounceRate = data.totalSent > 0 ? (data.totalBounces / data.totalSent) * 100 : 0;
 
