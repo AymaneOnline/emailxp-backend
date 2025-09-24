@@ -1,12 +1,22 @@
 // emailxp/backend/utils/resendEmailService.js
 
 const { Resend } = require('resend'); // Import the Resend SDK
+// Local email service fallback (nodemailer-based)
+const EmailService = require('./emailService');
 
-// Initialize Resend with your API key from environment variables
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resend = null;
+if (process.env.RESEND_API_KEY) {
+    try {
+        resend = new Resend(process.env.RESEND_API_KEY);
+    } catch (e) {
+        console.warn('Resend client failed to initialize:', e && e.message);
+        resend = null;
+    }
+} else {
+    console.warn('RESEND_API_KEY not set — Resend disabled, will fall back to internal EmailService');
+}
 
-console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_FROM || 'onboarding@resend.dev');
-
+console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_FROM || 'onboarding@resend.dev', 'resendEnabled=', !!resend);
 /**
  * Sends an email using Resend.
  * @param {Object} options - Email options.
@@ -32,24 +42,48 @@ const sendEmail = async ({ to, subject, html, text, from, fromName }) => {
     
     console.log('DEBUG Resend Util - Using finalFrom:', finalFrom);
     
-    try {
-        const payload = { from: finalFrom, to, subject, html, text: text || '' };
-        const { data, error } = await resend.emails.send(payload);
+    // If Resend is available, try to send with it first
+    if (resend) {
+        try {
+            const payload = { from: finalFrom, to, subject, html, text: text || '' };
+            const { data, error } = await resend.emails.send(payload);
 
-        if (error) {
-            console.error('Error sending email with Resend:', error);
-            const msg = error.message || JSON.stringify(error);
+            if (error) {
+                console.error('Error sending email with Resend:', error);
+                const msg = error.message || JSON.stringify(error);
+                const sandbox = msg.includes('only send testing emails') || msg.includes('verify a domain');
+                const err = new Error(msg);
+                err.sandbox = sandbox;
+                throw err;
+            }
+
+            console.log('Email sent successfully with Resend:', data);
+            return data; // Returns data like { id: 'email_id' }
+        } catch (err) {
+            console.error('Resend send failed, will attempt fallback to EmailService:', err && err.message);
+
+            // If the error indicates an unverified domain / sandbox, annotate and rethrow
+            const msg = err && err.message ? err.message : '';
             const sandbox = msg.includes('only send testing emails') || msg.includes('verify a domain');
-            const err = new Error(msg);
-            err.sandbox = sandbox;
-            throw err;
-        }
+            if (sandbox) {
+                const e = new Error(msg);
+                e.sandbox = true;
+                throw e;
+            }
 
-        console.log('Email sent successfully with Resend:', data);
-        return data; // Returns data like { id: 'email_id' }
-    } catch (err) {
-        console.error('Caught exception while sending email with Resend:', err);
-        throw err; // Re-throw the error for the calling function to handle
+            // Otherwise fall through to internal EmailService fallback
+        }
+    }
+
+    // Fallback: use the nodemailer-based EmailService
+    try {
+        const emailSvc = new EmailService();
+        const result = await emailSvc.sendEmail({ to, subject, html, text, from: finalFrom });
+        console.log('Email sent via fallback EmailService:', result);
+        return result;
+    } catch (fallbackErr) {
+        console.error('Fallback EmailService failed to send email:', fallbackErr);
+        throw fallbackErr;
     }
 };
 
