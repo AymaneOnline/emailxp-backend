@@ -116,12 +116,23 @@ app.get('/api/groups/test', (req, res) => {
 });
 
 // Serve frontend (if applicable, for Railway this is usually separate)
-if (process.env.NODE_ENV === 'production') {
-    // ...
-} else {
-    // This is only for local dev if you run backend on root
-    app.get('/', (req, res) => res.status(200).json({ message: 'Welcome to the EmailXP Backend API' }));
-}
+// Provide a root route that is safe in both production and development.
+// - In production, redirect to FRONTEND_URL (if configured).
+// - Otherwise return a small HTML or JSON welcome page.
+app.get('/', (req, res) => {
+    const frontend = process.env.FRONTEND_URL;
+    if (process.env.NODE_ENV === 'production' && frontend) {
+        return res.redirect(frontend);
+    }
+
+    // For browsers prefer an HTML response; otherwise JSON
+    if (req.accepts('html')) {
+        const link = frontend || '/api/status';
+        return res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"><title>EmailXP Backend</title></head><body><h1>EmailXP Backend API</h1><p>API status: <a href="/api/status">/api/status</a></p><p>Frontend: <a href="${link}">${link}</a></p></body></html>`);
+    }
+
+    return res.status(200).json({ message: 'Welcome to the EmailXP Backend API', frontendUrl: frontend || null });
+});
 
 // Public landing page routes
 app.use('/', require('./routes/publicLandingPageRoutes'));
