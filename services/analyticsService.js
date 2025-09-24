@@ -915,15 +915,12 @@ class AnalyticsService {
       sent++;
       if (track.status === 'delivered') delivered++;
       
-      // Count opens
+      // Count unique opens and clicks (not total events)
       if (track.opens && track.opens.length > 0) {
-        opened += track.opens.length;
         uniqueOpeners.add(track.subscriber.toString());
       }
       
-      // Count clicks
       if (track.clicks && track.clicks.length > 0) {
-        clicked += track.clicks.length;
         uniqueClickers.add(track.subscriber.toString());
       }
     }
@@ -931,9 +928,9 @@ class AnalyticsService {
     return {
       sent,
       delivered,
-      opened,
+      opened: uniqueOpeners.size,  // Use unique opens for rate calculation
       uniqueOpens: uniqueOpeners.size,
-      clicked,
+      clicked: uniqueClickers.size,  // Use unique clicks for rate calculation
       uniqueClicks: uniqueClickers.size
     };
   }
