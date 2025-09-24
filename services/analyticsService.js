@@ -118,7 +118,7 @@ class AnalyticsService {
       if (track.opens && track.opens.length > 0) {
         for (const openEvent of track.opens) {
           metrics.opened++;
-          uniqueOpeners.add(track.subscriberId.toString());
+          uniqueOpeners.add(track.subscriber ? track.subscriber.toString() : 'unknown');
           
           // Track open time and hour
           if (openEvent.timestamp) {
@@ -152,7 +152,7 @@ class AnalyticsService {
       if (track.clicks && track.clicks.length > 0) {
         for (const clickEvent of track.clicks) {
           metrics.clicked++;
-          uniqueClickers.add(track.subscriberId.toString());
+          uniqueClickers.add(track.subscriber ? track.subscriber.toString() : 'unknown');
           
           if (clickEvent.timestamp) {
             const hour = new Date(clickEvent.timestamp).getHours();
@@ -177,7 +177,7 @@ class AnalyticsService {
           switch (event.type) {
             case 'open':
               metrics.opened++;
-              uniqueOpeners.add(track.subscriberId.toString());
+              uniqueOpeners.add(track.subscriber ? track.subscriber.toString() : 'unknown');
               
               // Track open time and hour
               if (event.timestamp) {
@@ -228,7 +228,7 @@ class AnalyticsService {
 
             case 'click':
               metrics.clicked++;
-              uniqueClickers.add(track.subscriberId.toString());
+              uniqueClickers.add(track.subscriber ? track.subscriber.toString() : 'unknown');
               
               if (event.timestamp) {
                 const hour = new Date(event.timestamp).getHours();
