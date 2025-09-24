@@ -17,6 +17,38 @@ if (process.env.RESEND_API_KEY) {
 }
 
 console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_FROM || 'onboarding@resend.dev', 'resendEnabled=', !!resend);
+
+/**
+ * Adds an unsubscribe footer to HTML email content
+ * @param {string} html - Original HTML content
+ * @param {string} subscriberId - Subscriber ID for unsubscribe link
+ * @param {string} campaignId - Campaign ID for tracking
+ * @returns {string} HTML with unsubscribe footer added
+ */
+const addUnsubscribeFooter = (html, subscriberId, campaignId) => {
+    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${subscriberId}${campaignId ? `/${campaignId}` : ''}`;
+
+    const footerHtml = `
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e5e5; text-align: center; font-size: 12px; color: #666;">
+            <p>
+                You're receiving this email because you subscribed to our mailing list.
+                <br>
+                <a href="${unsubscribeUrl}" style="color: #666; text-decoration: underline;">Unsubscribe</a>
+            </p>
+            <p style="margin-top: 10px;">
+                Powered by <strong>EmailXP</strong>
+            </p>
+        </div>
+    `;
+
+    // Insert footer before closing body tag, or at the end if no body tag
+    if (html.includes('</body>')) {
+        return html.replace('</body>', `${footerHtml}</body>`);
+    } else {
+        return html + footerHtml;
+    }
+};
 /**
  * Sends an email using Resend.
  * @param {Object} options - Email options.
@@ -27,8 +59,10 @@ console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_
  * @param {string} [options.from] - Sender email address (e.g., 'onboarding@yourdomain.com').
  * Must be a verified domain in Resend.
  * @param {string} [options.fromName] - Sender name (e.g., 'Your Company Name').
+ * @param {string} [options.subscriberId] - Subscriber ID for unsubscribe footer.
+ * @param {string} [options.campaignId] - Campaign ID for unsubscribe tracking.
  */
-const sendEmail = async ({ to, subject, html, text, from, fromName }) => {
+const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId, campaignId }) => {
     // Debug logging to track what's being passed
     console.log('DEBUG Resend Util - Received params:', { to, from, fromName });
     
@@ -41,11 +75,17 @@ const sendEmail = async ({ to, subject, html, text, from, fromName }) => {
     const finalFrom = fromName ? `${fromName} <${chosenFrom}>` : chosenFrom;
     
     console.log('DEBUG Resend Util - Using finalFrom:', finalFrom);
-    
+
+    // Add unsubscribe footer if subscriber info is provided
+    let finalHtml = html;
+    if (subscriberId) {
+        finalHtml = addUnsubscribeFooter(html, subscriberId, campaignId);
+    }
+
     // If Resend is available, try to send with it first
     if (resend) {
         try {
-            const payload = { from: finalFrom, to, subject, html, text: text || '' };
+            const payload = { from: finalFrom, to, subject, html: finalHtml, text: text || '' };
             const { data, error } = await resend.emails.send(payload);
 
             if (error) {
@@ -78,7 +118,7 @@ const sendEmail = async ({ to, subject, html, text, from, fromName }) => {
     // Fallback: use the nodemailer-based EmailService
     try {
         const emailSvc = new EmailService();
-        const result = await emailSvc.sendEmail({ to, subject, html, text, from: finalFrom });
+        const result = await emailSvc.sendEmail({ to, subject, html: finalHtml, text, from: finalFrom });
         console.log('Email sent via fallback EmailService:', result);
         return result;
     } catch (fallbackErr) {

@@ -47,7 +47,9 @@ class ResendService {
       html: htmlWithClickTracking, 
       text, 
       from, 
-      fromName: fromName || process.env.MAILERSEND_FROM_NAME || 'EmailXP' 
+      fromName: fromName || process.env.MAILERSEND_FROM_NAME || 'EmailXP',
+      subscriberId,
+      campaignId
     });
 
     // Create tracking record

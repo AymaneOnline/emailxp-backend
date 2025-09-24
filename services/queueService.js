@@ -51,17 +51,16 @@ emailQueue.process('send-email', 10, async (job) => {
   logger.log(`[QueueService] Processing email job`, { toEmail, campaignId });
 
   try {
-    const result = await sendEmail(
-      toEmail,
+    const result = await sendEmail({
+      to: toEmail,
       subject,
-      htmlContent,
-      plainTextContent,
+      html: htmlContent,
+      text: plainTextContent,
       campaignId,
       subscriberId,
-      groupId,
-      fromEmail,
+      from: fromEmail,
       fromName
-    );
+    });
 
     if (result && result.success) {
   logger.log(`[QueueService] Email sent successfully`, { toEmail });
