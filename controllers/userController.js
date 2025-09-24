@@ -197,9 +197,8 @@ const loginUser = asyncHandler(async (req, res) => {
       token: generateToken(user._id),
     });
   } else {
-    res.status(401);
-    // Keep generic message for security, debug already logged internally if enabled
-    throw new Error('Invalid credentials');
+    // Explicit JSON response for invalid credentials to avoid HTML/redirects
+    return res.status(401).json({ message: 'Invalid credentials' });
   }
 });
 
