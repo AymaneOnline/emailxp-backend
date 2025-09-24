@@ -3,8 +3,6 @@ const router = express.Router();
 const {
     getSubscriberActivity,
     segmentSubscribers,
-    addTagsToSubscriber,
-    removeTagsFromSubscriber,
     getSubscribers,
     getSubscribersByGroup,
     getSubscriber,
@@ -15,7 +13,11 @@ const {
     bulkDeleteSubscribers,
     getSubscriberStats,
     addSubscriberToGroup,
-    removeSubscriberFromGroup
+    removeSubscriberFromGroup,
+    confirmSubscriber,
+    resendConfirmation,
+    bulkUpdateSubscriberStatus,
+    exportSelectedSubscribers
 } = require('../controllers/subscriberController');
 const { protect } = require('../middleware/authMiddleware');
 const {
@@ -24,7 +26,10 @@ const {
 } = require('../middleware/subscriberValidation');
 const validateBulkImport = require('../middleware/bulkImportValidation');
 
-// All routes are protected
+// Public confirmation endpoint
+router.get('/confirm/:token', confirmSubscriber);
+
+// All remaining routes are protected
 router.use(protect);
 
 // Activity history endpoint
@@ -33,9 +38,7 @@ router.get('/:id/activity', getSubscriberActivity);
 // Segmentation endpoint
 router.post('/segment', segmentSubscribers);
 
-// Tag management for subscribers
-router.post('/:id/tags', addTagsToSubscriber);
-router.delete('/:id/tags', removeTagsFromSubscriber);
+// tag endpoints removed
 
 // Test route
 router.get('/test', (req, res) => {
@@ -58,6 +61,8 @@ router.route('/:id')
 // Bulk operations
 router.post('/import', validateBulkImport, bulkImportSubscribers);
 router.delete('/bulk', bulkDeleteSubscribers);
+router.post('/bulk/status', bulkUpdateSubscriberStatus);
+router.post('/bulk/export', exportSelectedSubscribers);
 
 // Group-specific subscriber routes (for backward compatibility)
 router.get('/group/:groupId', getSubscribersByGroup);
@@ -65,5 +70,8 @@ router.get('/group/:groupId', getSubscribersByGroup);
 // Subscriber-group relationship management
 router.post('/:id/groups/:groupId', addSubscriberToGroup);
 router.delete('/:id/groups/:groupId', removeSubscriberFromGroup);
+
+// Resend confirmation
+router.post('/:id/resend-confirmation', resendConfirmation);
 
 module.exports = router;

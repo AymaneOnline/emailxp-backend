@@ -8,20 +8,23 @@ const generateToken = require('../utils/generateToken');
 const { sendEmail } = require('../utils/resendEmailService');
 const crypto = require('crypto'); // Ensure crypto is imported
 const { uploadProfilePicture, deleteProfilePicture, getPublicIdFromUrl } = require('../utils/fileUpload');
+const { normalizeWebsite } = require('../utils/website');
 
 // @desc    Register new user
 // @route   POST /api/users/register
 // @access  Public
 const registerUser = asyncHandler(async (req, res) => {
-  const { companyOrOrganization, name, email, password } = req.body;
+  const { companyOrOrganization, name, email, password, website } = req.body;
+
+  const normalizedEmail = (email || '').trim().toLowerCase();
 
   if (!companyOrOrganization || !name || !email || !password) {
     res.status(400);
     throw new Error('Please add all fields: Company/Organization, Name, Email, and Password');
   }
 
-  // Check if user exists
-  const userExists = await User.findOne({ email });
+  // Check if user exists (normalized email)
+  const userExists = await User.findOne({ email: normalizedEmail });
 
   if (userExists) {
     res.status(400);
@@ -66,20 +69,28 @@ const registerUser = asyncHandler(async (req, res) => {
           requireEmailVerification: true
         }
       };
-
       const organizations = await Organization.create([organizationData], { session });
       organization = organizations[0];
 
       // Create user with organization reference
+      let normalizedWebsite;
+      try {
+        normalizedWebsite = normalizeWebsite(website);
+      } catch (e) {
+        res.status(400);
+        throw new Error(e.message);
+      }
+
       const userData = {
         companyOrOrganization,
         name,
-        email,
+  email: normalizedEmail,
         password, // Mongoose pre-save hook will hash this
         role: 'admin', // First user in organization becomes admin
         organization: organization._id,
         isVerified: false, // Default to false
         isProfileComplete: false, // Default to false
+        website: normalizedWebsite || '',
         // verificationToken and verificationTokenExpires are NOT set here initially
       };
 
@@ -114,6 +125,10 @@ const registerUser = asyncHandler(async (req, res) => {
       website: user.website,
       industry: user.industry,
       bio: user.bio,
+      address: user.address,
+      city: user.city,
+      country: user.country,
+      hasVerifiedDomain: user.hasVerifiedDomain,
       token: generateToken(user._id),
       message: 'Registration successful! Please verify your email from the dashboard.',
     });
@@ -128,13 +143,35 @@ const registerUser = asyncHandler(async (req, res) => {
 // @access  Public
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
+  const AUTH_DEBUG = process.env.AUTH_DEBUG === '1';
+  const rawEmail = (email || '').trim();
+  const normalizedEmail = rawEmail.toLowerCase();
 
-  // Check for user email and populate organization
-  const user = await User.findOne({ email })
-    .select('+password') // Explicitly select password for comparison
+  // Primary lookup using normalized email
+  let user = await User.findOne({ email: normalizedEmail })
+    .select('+password')
     .populate('organization', 'name slug subscription.plan');
 
-  if (user && (await user.matchPassword(password))) {
+  // Fallback case-insensitive exact match if not found (handles legacy mixed-case stored emails)
+  if(!user && rawEmail && rawEmail !== normalizedEmail){
+    const escaped = rawEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    user = await User.findOne({ email: { $regex: `^${escaped}$`, $options: 'i' } })
+      .select('+password')
+      .populate('organization', 'name slug subscription.plan');
+  }
+  if(AUTH_DEBUG){
+    console.warn(`[AUTH_DEBUG] Login attempt raw='${rawEmail}' norm='${normalizedEmail}' found=${!!user}`);
+  }
+
+  let passwordOk = false;
+  if(user){
+    try { passwordOk = await user.matchPassword(password); } catch(_) { passwordOk = false; }
+  }
+  if(AUTH_DEBUG){
+    console.warn(`[AUTH_DEBUG] Password match=${passwordOk}`);
+  }
+
+  if (user && passwordOk) {
     res.json({
       _id: user._id,
       companyOrOrganization: user.companyOrOrganization,
@@ -153,10 +190,15 @@ const loginUser = asyncHandler(async (req, res) => {
       website: user.website,
       industry: user.industry,
       bio: user.bio,
+      address: user.address,
+      city: user.city,
+      country: user.country,
+      hasVerifiedDomain: user.hasVerifiedDomain,
       token: generateToken(user._id),
     });
   } else {
     res.status(401);
+    // Keep generic message for security, debug already logged internally if enabled
     throw new Error('Invalid credentials');
   }
 });
@@ -181,6 +223,10 @@ const getUserProfile = asyncHandler(async (req, res) => {
       website: user.website,
       industry: user.industry,
       bio: user.bio,
+      address: user.address,
+      city: user.city,
+      country: user.country,
+      hasVerifiedDomain: user.hasVerifiedDomain,
     });
   } else {
     res.status(404);
@@ -198,9 +244,21 @@ const updateUserProfile = asyncHandler(async (req, res) => {
     user.name = req.body.name || user.name;
     user.email = req.body.email || user.email;
     user.companyOrOrganization = req.body.companyOrOrganization || user.companyOrOrganization;
-    user.website = req.body.website || user.website;
+    // Website normalization (allow clearing with empty string)
+    if ('website' in req.body) {
+      try {
+        const normalized = normalizeWebsite(req.body.website);
+        user.website = normalized === undefined ? user.website : normalized; // undefined means no change
+      } catch (e) {
+        res.status(400);
+        throw new Error(e.message);
+      }
+    }
     user.industry = req.body.industry || user.industry;
     user.bio = req.body.bio || user.bio;
+  if ('address' in req.body) user.address = req.body.address || '';
+  if ('city' in req.body) user.city = req.body.city || '';
+  if ('country' in req.body) user.country = req.body.country || '';
 
     // Set isProfileComplete to true if all required fields are present
     // This logic should ideally be handled on the frontend and sent as part of the payload,
@@ -227,6 +285,10 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       website: updatedUser.website,
       industry: updatedUser.industry,
       bio: updatedUser.bio,
+      address: updatedUser.address,
+      city: updatedUser.city,
+      country: updatedUser.country,
+      hasVerifiedDomain: updatedUser.hasVerifiedDomain,
       token: generateToken(updatedUser._id),
     });
   } else {
@@ -345,34 +407,36 @@ const sendVerificationEmail = asyncHandler(async (req, res) => {
   const verificationToken = user.getVerificationToken(); // This method is on the User model
   await user.save({ validateBeforeSave: false }); // Save the user with the new token
 
-  // Construct verification URL
+  // Construct verification URL (API endpoint that finalizes verification & redirects)
   const verificationUrl = `${req.protocol}://${req.get('host')}/api/users/verify-email/${verificationToken}`;
 
-  const message = `
-    <h1>Email Verification for EmailXP</h1>
-    <p>Please verify your email address to activate your EmailXP account by clicking the link below:</p>
-    <p><a href="${verificationUrl}" clicktracking="off">Verify Email Address</a></p>
-    <p>This link will expire in 1 hour.</p>
-    <p>If you did not register for EmailXP, please ignore this email.</p>
-    <br>
-    <p>Best regards,</p>
-    <p>The EmailXP Team</p>
-  `;
+  // Build branded template
+  const { buildVerificationEmail } = require('../utils/emailTemplates/verificationEmail');
+  const { subject, html, text } = buildVerificationEmail({
+    userName: user.name,
+    verificationUrl,
+    website: user.website || ''
+  });
 
   try {
     await sendEmail({
       to: user.email,
-      subject: 'EmailXP Account Verification',
-      html: message,
-      text: message.replace(/<[^>]*>?/gm, ''),
-      from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
+      subject,
+      html,
+      text,
+      from: process.env.EMAIL_FROM,
       fromName: 'EmailXP'
     });
-
-    res.status(200).json({ message: 'Verification email sent successfully! Please check your inbox.' });
+    return res.status(200).json({ message: 'Verification email sent successfully! Please check your inbox.' });
   } catch (emailError) {
     console.error('Error sending verification email:', emailError);
-    res.status(500).json({ message: 'Failed to send verification email. Please try again later.' });
+    if (emailError?.sandbox) {
+      return res.status(409).json({
+        message: 'Domain not verified yet – verification email not sent.',
+        sandbox: true
+      });
+    }
+    return res.status(500).json({ message: 'Failed to send verification email. Please try again later.' });
   }
 });
 

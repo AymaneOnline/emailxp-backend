@@ -203,7 +203,7 @@ analyticsSchema.methods.calculatePercentageChange = function(oldValue, newValue)
 // Static methods
 analyticsSchema.statics.aggregateMetrics = async function(userId, filters = {}) {
   const pipeline = [
-    { $match: { user: mongoose.Types.ObjectId(userId), ...filters } },
+    { $match: { user: new mongoose.Types.ObjectId(userId), ...filters } },
     {
       $group: {
         _id: null,

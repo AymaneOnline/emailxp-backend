@@ -3,6 +3,7 @@
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
+const { getDefaultPermissions } = require('./rbac');
 
 const protect = asyncHandler(async (req, res, next) => {
   let token;
@@ -21,6 +22,12 @@ const protect = asyncHandler(async (req, res, next) => {
       if (!user) {
         res.status(401);
         throw new Error('Not authorized, user not found');
+      }
+
+      // Initialize permissions if they haven't been set
+      if (!user.permissions || user.permissions.length === 0) {
+        user.permissions = getDefaultPermissions(user.role);
+        await user.save();
       }
 
       req.user = user; // Attach user to the request object

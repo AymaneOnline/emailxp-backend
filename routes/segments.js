@@ -223,6 +223,23 @@ router.get('/:id/subscribers', async (req, res) => {
   }
 });
 
+// Preview a saved segment (count + sample) without altering cached counts
+router.get('/:id/preview', async (req, res) => {
+  try {
+    const { sample = 20 } = req.query;
+    const segment = await Segment.findOne({ _id: req.params.id, user: req.user.id });
+    if (!segment) return res.status(404).json({ message: 'Segment not found' });
+    const query = { user: req.user.id, ...segment.buildQuery() };
+    const Subscriber = require('../models/Subscriber');
+    const count = await Subscriber.countDocuments(query);
+    const docs = await Subscriber.find(query).limit(parseInt(sample,10)).select('email name status tags createdAt');
+    res.json({ count, sample: docs, query });
+  } catch (e) {
+    console.error('Error previewing saved segment:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Get available filter fields and operators
 router.get('/meta/fields', async (req, res) => {
   try {

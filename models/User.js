@@ -65,6 +65,28 @@ const userSchema = mongoose.Schema(
       type: String,
       default: '',
     },
+    // Location fields
+    address: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    city: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    country: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    // DOMAIN VERIFICATION FLAG
+    hasVerifiedDomain: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
     // END NEW FIELDS
     
     // MULTI-TENANCY FIELDS

@@ -10,6 +10,7 @@ const { sendEmail } = require('../utils/resendEmailService'); // NEW: Import Res
 const OpenEvent = require('../models/OpenEvent');
 const ClickEvent = require('../models/ClickEvent');
 const { executeSendCampaign } = require('../utils/campaignScheduler');
+const domainAuthService = require('../services/domainAuthService');
 const moment = require('moment-timezone');
 
 
@@ -60,7 +61,7 @@ const getCampaigns = asyncHandler(async (req, res) => {
 // @route   POST /api/campaigns
 // @access  Private
 const createCampaign = asyncHandler(async (req, res) => {
-    const { name, subject, fromEmail, fromName, htmlContent, plainTextContent, group, groups = [], segments = [], individualSubscribers = [], scheduledAt, status, template, scheduleType, scheduleTimezone } = req.body;
+    const { name, subject, fromEmail, fromName, htmlContent, design, plainTextContent, group, groups = [], segments = [], individualSubscribers = [], scheduledAt, status, template, scheduleType, scheduleTimezone, preferenceCategory } = req.body;
 
     if (!name || !subject || !htmlContent) {
         res.status(400);
@@ -81,6 +82,24 @@ const createCampaign = asyncHandler(async (req, res) => {
         throw new Error('Please select at least one recipient group, segment, or individual subscriber');
     }
 
+    // Enforce verified domain for fromEmail
+    const domainPart = (fromEmail || req.user.email || '').split('@').pop();
+    const domainCheck = await domainAuthService.requireVerifiedDomain(domainPart);
+    if (!domainCheck.allowed) {
+        res.status(400);
+        throw new Error(`Sending domain not verified: ${domainCheck.reason}`);
+    }
+
+    // Preference category: if provided use it, otherwise try default
+    let categoryId = preferenceCategory || null;
+    if (!categoryId) {
+        try {
+            const PreferenceCategory = require('../models/PreferenceCategory');
+            const def = await PreferenceCategory.findOne({ user: req.user.id, isDefault: true, isArchived: false });
+            if (def) categoryId = def._id;
+        } catch (e) { /* silent */ }
+    }
+
     const campaign = await Campaign.create({
         user: req.user.id,
         name,
@@ -88,6 +107,7 @@ const createCampaign = asyncHandler(async (req, res) => {
         fromEmail: fromEmail || req.user.email,
         fromName: fromName || req.user.name,
         htmlContent,
+        design,
         plainTextContent,
         group: selectedGroups[0] || undefined,
         groups: selectedGroups,
@@ -97,7 +117,8 @@ const createCampaign = asyncHandler(async (req, res) => {
         scheduleType: scheduleType || 'fixed',
         scheduleTimezone: scheduleTimezone || null,
         status: scheduledAt && new Date(scheduledAt) > new Date() ? 'scheduled' : 'draft',
-        template: template || null
+        template: template || null,
+        preferenceCategory: categoryId
     });
 
     res.status(201).json(campaign);
@@ -110,7 +131,8 @@ const getCampaignById = asyncHandler(async (req, res) => {
     const campaign = await Campaign.findById(req.params.id)
         .populate('group', 'name subscribers') // Populate group name and subscribers
         .populate('groups', 'name') // Populate multi-groups if present
-        .populate('template', 'name'); // Populate template name
+        .populate('template', 'name') // Populate template name
+        .populate('preferenceCategory', 'name key');
 
     if (!campaign) {
         res.status(404);
@@ -130,7 +152,7 @@ const getCampaignById = asyncHandler(async (req, res) => {
 // @route   PUT /api/campaigns/:id
 // @access  Private
 const updateCampaign = asyncHandler(async (req, res) => {
-    const { name, subject, fromEmail, fromName, htmlContent, plainTextContent, group, groups = [], segments = [], individualSubscribers = [], scheduledAt, status, template, scheduleType, scheduleTimezone } = req.body;
+    const { name, subject, fromEmail, fromName, htmlContent, design, plainTextContent, group, groups = [], segments = [], individualSubscribers = [], scheduledAt, status, template, scheduleType, scheduleTimezone, preferenceCategory } = req.body;
 
     const campaign = await Campaign.findById(req.params.id);
 
@@ -167,14 +189,22 @@ const updateCampaign = asyncHandler(async (req, res) => {
     const selectedSegments = Array.from(new Set(Array.isArray(segments) ? segments : []));
     const selectedIndividuals = Array.from(new Set(Array.isArray(individualSubscribers) ? individualSubscribers : []));
 
-    const updatedCampaign = await Campaign.findByIdAndUpdate(
-        req.params.id,
-        {
+    // Enforce verified domain if fromEmail is changing
+    if (fromEmail) {
+        const updDomain = fromEmail.split('@').pop();
+        const check = await domainAuthService.requireVerifiedDomain(updDomain);
+        if (!check.allowed) {
+            res.status(400);
+            throw new Error(`Sending domain not verified: ${check.reason}`);
+        }
+    }
+    const updatePayload = {
             name,
             subject,
             fromEmail: fromEmail || req.user.email,
             fromName: fromName || req.user.name,
             htmlContent,
+            design,
             plainTextContent,
             group: selectedGroups[0] || campaign.group,
             groups: selectedGroups.length > 0 ? selectedGroups : campaign.groups,
@@ -185,7 +215,14 @@ const updateCampaign = asyncHandler(async (req, res) => {
             scheduleTimezone: scheduleTimezone || campaign.scheduleTimezone || null,
             status: newStatus,
             template: template || null
-        },
+    };
+    if (preferenceCategory !== undefined) {
+        updatePayload.preferenceCategory = preferenceCategory || null;
+    }
+
+    const updatedCampaign = await Campaign.findByIdAndUpdate(
+        req.params.id,
+        updatePayload,
         { new: true, runValidators: true }
     );
 
@@ -245,13 +282,25 @@ const sendTestEmail = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Rebuild fromEmail with current primary domain to avoid stale stored value
+        const { buildFromAddress } = require('../utils/fromAddress');
+        try {
+            const fromData = await buildFromAddress(req.user.id);
+            campaign.fromEmail = fromData.email;
+            if (!campaign.fromName) campaign.fromName = fromData.from?.split('<')[0].trim();
+            await campaign.save();
+        } catch (e) {
+            res.status(400);
+            e.code = e.code || 'DOMAIN_NOT_VERIFIED';
+            throw e;
+        }
         await sendEmail({
-            to: recipientEmail,
+            to: recipientEmail, // Use user-specified test recipient
             subject: `[TEST] ${campaign.subject}`,
             html: campaign.htmlContent,
             text: campaign.plainTextContent,
-            from: campaign.fromEmail,    // Use campaign's from email
-            fromName: campaign.fromName  // Use campaign's from name
+            from: campaign.fromEmail,
+            fromName: campaign.fromName
         });
         res.status(200).json({ message: 'Test email sent successfully!' });
     } catch (error) {
@@ -283,6 +332,15 @@ const sendCampaign = asyncHandler(async (req, res) => {
         throw new Error('Campaign has already been sent or is currently sending.');
     }
 
+    // Build / enforce From via verified primary domain
+    const { buildFromAddress } = require('../utils/fromAddress');
+    try {
+        const fromData = await buildFromAddress(req.user.id);
+        campaign.fromEmail = fromData.email; // ensure stored
+        await campaign.save();
+    } catch (e) {
+        res.status(400); throw new Error(e.message || 'Verified domain required');
+    }
     // Delegate sending to the unified tracked/filtered scheduler path
     const result = await executeSendCampaign(campaign._id);
 
@@ -372,32 +430,21 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 // @route   GET /api/campaigns/:id/analytics
 // @access  Private
 const getCampaignAnalytics = asyncHandler(async (req, res) => {
-    const campaign = await Campaign.findById(req.params.id);
-
+    const campaignId = req.params.id;
+    const userId = req.user.id;
+    
+    // Verify campaign ownership
+    const campaign = await Campaign.findOne({ _id: campaignId, user: userId });
     if (!campaign) {
         res.status(404);
         throw new Error('Campaign not found');
     }
-
-    if (campaign.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to view analytics for this campaign');
-    }
-
-    // Return the stored analytics data from the campaign document
-    res.status(200).json({
-        emailsSuccessfullySent: campaign.emailsSuccessfullySent || 0,
-        opensCount: campaign.opens || 0,
-        uniqueOpensCount: campaign.opens || 0, // Using opens as uniqueOpens for now
-        clicksCount: campaign.clicks || 0,
-        uniqueClicksCount: campaign.clicks || 0, // Using clicks as uniqueClicks for now
-        unsubscribedCount: campaign.unsubscribedCount || 0,
-        spamComplaintsCount: campaign.complaintCount || 0,
-        // Calculate rates if not stored directly
-        openRate: campaign.emailsSuccessfullySent > 0 ? ((campaign.opens || 0) / campaign.emailsSuccessfullySent * 100).toFixed(2) : 0,
-        clickRate: campaign.emailsSuccessfullySent > 0 ? ((campaign.clicks || 0) / campaign.emailsSuccessfullySent * 100).toFixed(2) : 0,
-        CTOR: (campaign.opens || 0) > 0 ? ((campaign.clicks || 0) / (campaign.opens || 0) * 100).toFixed(2) : 0,
-    });
+    
+    // Get analytics from analytics service
+    const analyticsService = require('../services/analyticsService');
+    const analytics = await analyticsService.getCampaignAnalytics(userId, campaignId);
+    
+    res.json(analytics);
 });
 
 // @desc    Get time-series analytics for a specific campaign
@@ -489,39 +536,7 @@ const cancelCampaign = asyncHandler(async (req, res) => {
     res.json(campaign);
 });
 
-// @desc    Reschedule a campaign (allowed if not sent/sending/failed)
-// @route   POST /api/campaigns/:id/reschedule
-// @access  Private
-const rescheduleCampaign = asyncHandler(async (req, res) => {
-    const { scheduledAt } = req.body;
-    if (!scheduledAt) {
-        res.status(400);
-        throw new Error('scheduledAt is required');
-    }
-    const newTime = new Date(scheduledAt);
-    const now = new Date();
-    if (isNaN(newTime.getTime()) || newTime <= now) {
-        res.status(400);
-        throw new Error('scheduledAt must be a valid future datetime');
-    }
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) {
-        res.status(404);
-        throw new Error('Campaign not found');
-    }
-    if (campaign.user.toString() !== req.user.id) {
-        res.status(401);
-        throw new Error('Not authorized to reschedule this campaign');
-    }
-    if (['sent', 'sending', 'failed'].includes(campaign.status)) {
-        res.status(400);
-        throw new Error('Cannot reschedule a campaign that is sent, sending, or failed');
-    }
-    campaign.scheduledAt = newTime;
-    campaign.status = 'scheduled';
-    await campaign.save();
-    res.json(campaign);
-});
+
 
 module.exports = {
     getCampaigns,
@@ -535,5 +550,4 @@ module.exports = {
     getCampaignAnalytics,
     getCampaignAnalyticsTimeSeries,
     cancelCampaign,
-    rescheduleCampaign,
 };

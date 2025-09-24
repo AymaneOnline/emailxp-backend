@@ -130,7 +130,7 @@ const campaignScheduleSchema = new mongoose.Schema({
     recipientCount: Number,
     successCount: Number,
     failureCount: Number,
-    errors: [String],
+  errorMessages: [String],
     nextExecution: Date
   }],
   
@@ -252,7 +252,7 @@ campaignScheduleSchema.methods.recordExecution = function(result) {
     recipientCount: result.recipientCount,
     successCount: result.successCount,
     failureCount: result.failureCount,
-    errors: result.errors || [],
+  errorMessages: result.errors || result.errorMessages || [],
     nextExecution: this.calculateNextExecution()
   });
   

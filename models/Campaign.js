@@ -60,6 +60,15 @@ const campaignSchema = mongoose.Schema(
             type: String,
             default: '', // Optional when using a structured Template
         },
+        design: {
+            type: mongoose.Schema.Types.Mixed, // Store Unlayer design JSON
+            default: null,
+        },
+        editorType: {
+            type: String,
+            enum: ['unlayer', 'quill'],
+            default: 'unlayer',
+        },
         plainTextContent: { // This field is correctly added
             type: String,
             default: '',
@@ -101,6 +110,12 @@ const campaignSchema = mongoose.Schema(
             ref: 'Template',
             default: null,
         },
+        preferenceCategory: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'PreferenceCategory',
+            default: null,
+            index: true
+        },
         // --- CORRECT FIELD NAME: To store the count of successfully sent emails for a campaign ---
         emailsSuccessfullySent: {
             type: Number,
@@ -131,6 +146,12 @@ const campaignSchema = mongoose.Schema(
             type: Number,
             default: 0,
         },
+        // A/B Testing
+        abTest: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'ABTest',
+            default: null
+        },
         
         // Email queue information
         totalEmails: { type: Number, default: 0 },
@@ -157,6 +178,14 @@ const campaignSchema = mongoose.Schema(
             complained: { type: Number, default: 0 },
             unsubscribed: { type: Number, default: 0 },
             failed: { type: Number, default: 0 }
+        },
+        // Domain gating retry metadata
+        domainRetry: {
+            firstBlockedAt: { type: Date },
+            retryCount: { type: Number, default: 0 },
+            lastRetryAt: { type: Date },
+            lastBlockedCode: { type: String },
+            pendingAutoRetry: { type: Boolean, default: false }
         },
         // --- End of tracking fields ---
     },

@@ -27,12 +27,12 @@ const Group = require('../models/Group'); // Ensure Group model is imported if y
 const Subscriber = require('../models/Subscriber');
 const Segment = require('../models/Segment');
 const { sendEmail } = require('../services/emailService');
-const { addEmailJob: addEmailJobLegacy } = require('./emailQueue');
-const { addEmailJob, addCampaignBatchJob } = require('../services/queueService');
+const { addEmailJob, addCampaignBatchJob } = require('../services/queueServiceWrapper');
 const { groupSubscribersByTimezone, calculateSendTime, getDefaultTimezone } = require('./timezoneService');
-// Removed cheerio as it's no longer directly used for tracking content modification here.
-// If you use cheerio for other purposes in this file, keep it.
-// const cheerio = require('cheerio'); // You can remove this line if it's not used elsewhere.
+const { personalizeDynamicContent } = require('../services/personalizationService');
+const domainAuthService = require('../services/domainAuthService');
+const DomainAuthentication = require('../models/DomainAuthentication');
+const { buildFromAddress } = require('./fromAddress');
 
 // BACKEND_URL for unsubscribe links
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
@@ -70,6 +70,39 @@ const executeSendCampaign = async (campaignId) => {
             return { success: false, message: `Campaign status is '${campaign.status}'. Cannot send.` };
         }
 
+        // Re-validate primary sending domain before proceeding
+        let primaryDomainAuth = await DomainAuthentication.findOne({ user: campaign.user, isPrimary: true }).lean();
+        if (primaryDomainAuth) {
+            try {
+                primaryDomainAuth = await domainAuthService.verifyDns(primaryDomainAuth);
+            } catch (e) {
+                logger.warn('[Scheduler] DNS re-check failed', { domain: primaryDomainAuth?.domain, error: e.message });
+            }
+        }
+        if (!primaryDomainAuth || primaryDomainAuth.status !== 'verified') {
+            campaign.status = 'failed';
+            campaign.domainRetry = campaign.domainRetry || {};
+            if (!campaign.domainRetry.firstBlockedAt) campaign.domainRetry.firstBlockedAt = new Date();
+            campaign.domainRetry.lastBlockedCode = 'DOMAIN_NOT_VERIFIED';
+            campaign.domainRetry.pendingAutoRetry = true;
+            await campaign.save();
+            return { success: false, message: 'Primary sending domain is not verified. Re-verify DNS records before sending.', errorCode: 'DOMAIN_NOT_VERIFIED', autoRetry: true };
+        }
+
+        // Ensure campaign.fromEmail matches current verified primary domain
+        if (!campaign.fromEmail || !campaign.fromEmail.endsWith(`@${primaryDomainAuth.domain}`)) {
+            try {
+                const fromData = await buildFromAddress(campaign.user);
+                campaign.fromEmail = fromData.email;
+                if (!campaign.fromName && fromData.from) {
+                    campaign.fromName = fromData.from.split('<')[0].trim();
+                }
+            } catch (e) {
+                campaign.status = 'failed';
+                await campaign.save();
+                return { success: false, message: e.message || 'Unable to derive verified From address.', errorCode: 'DOMAIN_BUILD_FROM_FAILED' };
+            }
+        }
         campaign.status = 'sending';
         await campaign.save();
 
@@ -94,10 +127,12 @@ const executeSendCampaign = async (campaignId) => {
         if (individualIds.length > 0) {
             orClauses.push({ _id: { $in: individualIds } });
         }
-        for (const segment of segments) {
-            const segmentQuery = segment.buildQuery();
-            if (Object.keys(segmentQuery).length > 0) {
-                orClauses.push(segmentQuery);
+        if (segments.length > 0) {
+            for (const segment of segments) {
+                const segmentQuery = segment.buildQuery();
+                if (segmentQuery && Object.keys(segmentQuery).length > 0) {
+                    orClauses.push(segmentQuery);
+                }
             }
         }
 
@@ -113,7 +148,7 @@ const executeSendCampaign = async (campaignId) => {
         // Final query applying base conditions to all recipients
         const finalQuery = {
             user: campaign.user,
-            status: 'subscribed',
+            status: 'subscribed', // Excludes 'pending' double opt-in
             isDeleted: false,
             $or: orClauses
         };
@@ -181,12 +216,36 @@ const executeSendCampaign = async (campaignId) => {
         } else {
             // Standard immediate sending - use Redis queue for better reliability
             const emailJobs = subscribers.map(subscriber => {
-                let personalizedHtml = campaign.htmlContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                let personalizedPlain = campaign.plainTextContent.replace(/\{\{name\}\}/g, subscriber.name || 'there');
-                let personalizedSubject = campaign.subject.replace(/\{\{name\}\}/g, subscriber.name || 'there');
+                // Safety: skip any subscriber that might no longer be subscribed
+                if (subscriber.status && subscriber.status !== 'subscribed') return null;
+                // Get subscriber's custom fields and location data
+                const subscriberData = {
+                    name: subscriber.name || '',
+                    email: subscriber.email,
+                    firstName: subscriber.name ? subscriber.name.split(' ')[0] : '',
+                    lastName: subscriber.name && subscriber.name.split(' ').length > 1 ? subscriber.name.split(' ').slice(1).join(' ') : '',
+                    location: subscriber.location || {},
+                    customFields: subscriber.customFields || {}
+                };
+                
+                let personalizedHtml = campaign.htmlContent;
+                let personalizedPlain = campaign.plainTextContent;
+                let personalizedSubject = campaign.subject;
+                
+                // Apply standard personalization
+                personalizedSubject = personalizedSubject.replace(/\{\{name\}\}/g, subscriberData.name || 'there');
+                
+                // Apply dynamic content personalization
+                // Extract dynamic blocks from campaign template if available
+                let dynamicBlocks = [];
+                if (campaign.template && campaign.template.structure && campaign.template.structure.blocks) {
+                    dynamicBlocks = campaign.template.structure.blocks.filter(block => block.type === 'dynamic');
+                }
+                
+                personalizedHtml = personalizeDynamicContent(personalizedHtml, subscriberData, dynamicBlocks);
                 
                 return {
-                    toEmail: subscriber.email,
+                    toEmail: subscriber.email, // Send to actual subscriber email
                     subject: personalizedSubject,
                     htmlContent: personalizedHtml,
                     plainTextContent: personalizedPlain,
@@ -194,13 +253,14 @@ const executeSendCampaign = async (campaignId) => {
                     subscriberId: subscriber._id,
                     groupId: primaryGroupId,
                     fromEmail: campaign.fromEmail,
-                    fromName: campaign.fromName,
+                    fromName: campaign.fromName || 'EmailXP',
                 };
             });
             
             // Queue all email jobs
+            const filteredJobs = emailJobs.filter(Boolean);
             const sendResults = await Promise.allSettled(
-                emailJobs.map(emailData => addEmailJob(emailData))
+                filteredJobs.map(emailData => addEmailJob(emailData))
             );
             
             // Count successful queuing (not actual sending)
@@ -287,3 +347,6 @@ const startCampaignScheduler = () => {
 };
 
 module.exports.startCampaignScheduler = startCampaignScheduler;
+
+
+

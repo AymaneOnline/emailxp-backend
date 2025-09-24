@@ -13,10 +13,33 @@ router.get('/open/:messageId', async (req, res) => {
     const ipAddress = req.ip || req.connection.remoteAddress;
 
     // Record the open
-    await emailService.recordOpen(messageId, {
+    const tracking = await emailService.recordOpen(messageId, {
       userAgent,
       ipAddress
     });
+
+    // Also create OpenEvent document if tracking exists
+    if (tracking) {
+      const OpenEvent = require('../models/OpenEvent');
+      await OpenEvent.create({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber,
+        email: tracking.emailAddress,
+        ipAddress: ipAddress,
+        userAgent: userAgent
+      });
+      console.log('OpenEvent created for messageId:', messageId);
+
+      // Update campaign open count
+      const Campaign = require('../models/Campaign');
+      console.log('Updating campaign opens for campaign:', tracking.campaign);
+      await Campaign.findByIdAndUpdate(tracking.campaign, {
+        $inc: { opens: 1 }
+      });
+      console.log('Campaign opens updated successfully');
+    } else {
+      console.log('No EmailTracking found for messageId:', messageId);
+    }
 
     // Return a 1x1 transparent pixel
     const pixel = Buffer.from(
@@ -54,27 +77,63 @@ router.get('/click/:messageId', async (req, res) => {
     const userAgent = req.get('User-Agent');
     const ipAddress = req.ip || req.connection.remoteAddress;
 
+    console.log('Click tracking request:', { messageId, url, userAgent, ipAddress });
+
     if (!url) {
+      console.error('No URL parameter provided for click tracking');
       return res.status(400).json({ message: 'URL parameter is required' });
     }
 
+    const decodedUrl = decodeURIComponent(url);
+    console.log('Decoded URL:', decodedUrl);
+    console.log('About to redirect to decoded URL:', decodedUrl);
+
     // Record the click
-    await emailService.recordClick(messageId, {
-      url: decodeURIComponent(url),
+    const tracking = await emailService.recordClick(messageId, {
+      url: decodedUrl,
       userAgent,
       ipAddress
     });
 
+    // Also create ClickEvent document if tracking exists
+    if (tracking) {
+      const ClickEvent = require('../models/ClickEvent');
+      await ClickEvent.create({
+        campaign: tracking.campaign,
+        subscriber: tracking.subscriber,
+        email: tracking.emailAddress,
+        url: decodedUrl,
+        ipAddress: ipAddress,
+        userAgent: userAgent
+      });
+      console.log('ClickEvent created for messageId:', messageId);
+
+      // Update campaign click count
+      const Campaign = require('../models/Campaign');
+      console.log('Updating campaign clicks for campaign:', tracking.campaign);
+      await Campaign.findByIdAndUpdate(tracking.campaign, {
+        $inc: { clicks: 1 }
+      });
+      console.log('Campaign clicks updated successfully');
+    } else {
+      console.log('No EmailTracking found for messageId:', messageId);
+    }
+
+    console.log('Click recorded, redirecting to:', decodedUrl);
+
     // Redirect to the original URL
-    res.redirect(decodeURIComponent(url));
+    res.redirect(decodedUrl);
   } catch (error) {
     console.error('Error tracking email click:', error);
     
     // Still redirect even if tracking fails
     const { url } = req.query;
     if (url) {
-      res.redirect(decodeURIComponent(url));
+      const decodedUrl = decodeURIComponent(url);
+      console.log('Error occurred, still redirecting to:', decodedUrl);
+      res.redirect(decodedUrl);
     } else {
+      console.error('No URL to redirect to after error');
       res.status(400).json({ message: 'URL parameter is required' });
     }
   }

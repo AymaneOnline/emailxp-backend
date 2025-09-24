@@ -34,6 +34,7 @@ const emailLogSchema = new mongoose.Schema({
   
   // External service data
   messageId: String, // Mailgun message ID
+  idempotencyKey: { type: String, index: true },
   
   // Timestamps
   sentAt: Date,
@@ -111,7 +112,7 @@ emailLogSchema.index({ sentAt: -1 });
 // Static methods for analytics
 emailLogSchema.statics.getCampaignStats = async function(campaignId) {
   const stats = await this.aggregate([
-    { $match: { campaignId: mongoose.Types.ObjectId(campaignId) } },
+    { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
     {
       $group: {
         _id: '$status',
@@ -147,7 +148,7 @@ emailLogSchema.statics.getCampaignStats = async function(campaignId) {
 
 emailLogSchema.statics.getSubscriberEngagement = async function(subscriberId) {
   const engagement = await this.aggregate([
-    { $match: { subscriberId: mongoose.Types.ObjectId(subscriberId) } },
+    { $match: { subscriberId: new mongoose.Types.ObjectId(subscriberId) } },
     {
       $group: {
         _id: null,

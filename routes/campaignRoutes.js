@@ -5,9 +5,40 @@ const { protect } = require('../middleware/authMiddleware');
 const Campaign = require('../models/Campaign');
 const EmailLog = require('../models/EmailLog');
 const emailQueueService = require('../services/emailQueueService');
-const mailgunService = require('../services/mailgunService');
+const emailService = require('../services/emailService');
+const { 
+  getCampaigns, 
+  getDashboardStats, 
+  getCampaignById,
+  deleteCampaign,
+  getCampaignAnalytics,
+  getCampaignAnalyticsTimeSeries
+} = require('../controllers/campaignController');
 
 const router = express.Router();
+
+// Get all campaigns
+router.get('/', protect, getCampaigns);
+
+// Get dashboard statistics
+router.get('/dashboard-stats', protect, getDashboardStats);
+
+/**
+ * @desc    Get campaign analytics
+ * @route   GET /api/campaigns/:id/analytics
+ * @access  Private
+ */
+router.get('/:id/analytics', protect, getCampaignAnalytics);
+
+/**
+ * @desc    Get campaign time-series analytics  
+ * @route   GET /api/campaigns/:id/analytics/time-series
+ * @access  Private
+ */
+router.get('/:id/analytics/time-series', protect, getCampaignAnalyticsTimeSeries);
+
+// Get single campaign by ID (must come after specific routes)
+router.get('/:id', protect, getCampaignById);
 
 // Create campaign
 router.post('/', protect, asyncHandler(async (req, res) => {
@@ -67,12 +98,17 @@ router.put('/:id', protect, asyncHandler(async (req, res) => {
   res.json(updated);
 }));
 
+// Delete campaign
+router.delete('/:id', protect, deleteCampaign);
+
 /**
  * @desc    Send campaign immediately
  * @route   POST /api/campaigns/:id/send
  * @access  Private
  */
 router.post('/:id/send', protect, asyncHandler(async (req, res) => {
+  console.log(`🚀 Campaign send request received for campaign: ${req.params.id}, user: ${req.user.id}`);
+  
   const campaign = await Campaign.findById(req.params.id);
   
   if (!campaign) {
@@ -90,24 +126,48 @@ router.post('/:id/send', protect, asyncHandler(async (req, res) => {
     throw new Error('Campaign must be in draft status to send');
   }
   
+  console.log(`📊 Campaign found: ${campaign.name}, status: ${campaign.status}`);
+  
   try {
-    // Update campaign status
-    campaign.status = 'sending';
-    campaign.startedAt = new Date();
-    await campaign.save();
-    
-    // Add to email queue
-    const jobId = await emailQueueService.addCampaignToQueue(campaign._id);
-    
-    // Update campaign with job ID
-    campaign.jobId = jobId;
-    await campaign.save();
-    
-    res.json({
-      message: 'Campaign queued for sending',
-      campaignId: campaign._id,
-      jobId
-    });
+    // Check if campaign is scheduled for later
+    if (campaign.scheduledAt && new Date(campaign.scheduledAt) > new Date()) {
+      // Schedule for later
+      campaign.status = 'scheduled';
+      await campaign.save();
+      
+      console.log(`📅 Campaign scheduled for later: ${campaign.scheduledAt}`);
+      
+      // Add to scheduled campaigns (this would be handled by the scheduler)
+      // For now, just mark as scheduled
+      res.json({
+        message: 'Campaign scheduled successfully',
+        campaignId: campaign._id,
+        scheduledAt: campaign.scheduledAt
+      });
+    } else {
+      // Send immediately
+      // Update campaign status
+      campaign.status = 'sending';
+      campaign.startedAt = new Date();
+      await campaign.save();
+      
+      console.log(`📤 Campaign status updated to 'sending', adding to queue...`);
+      
+      // Add to email queue
+      const jobId = await emailQueueService.addCampaignToQueue(campaign._id);
+      
+      console.log(`✅ Campaign added to queue with job ID: ${jobId}`);
+      
+      // Update campaign with job ID
+      campaign.jobId = jobId;
+      await campaign.save();
+      
+      res.json({
+        message: 'Campaign queued for sending',
+        campaignId: campaign._id,
+        jobId
+      });
+    }
     
   } catch (error) {
     campaign.status = 'failed';
@@ -202,64 +262,6 @@ router.post('/:id/cancel', protect, asyncHandler(async (req, res) => {
 }));
 
 /**
- * @desc    Get campaign analytics
- * @route   GET /api/campaigns/:id/analytics
- * @access  Private
- */
-router.get('/:id/analytics', protect, asyncHandler(async (req, res) => {
-  const campaign = await Campaign.findById(req.params.id);
-  
-  if (!campaign) {
-    res.status(404);
-    throw new Error('Campaign not found');
-  }
-  
-  if (campaign.user.toString() !== req.user.id) {
-    res.status(401);
-    throw new Error('Not authorized');
-  }
-  
-  try {
-    // Get detailed stats from EmailLog
-    const stats = await EmailLog.getCampaignStats(campaign._id);
-    
-    // Get recent activity
-    const recentActivity = await EmailLog.find({ campaignId: campaign._id })
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .populate('subscriberId', 'email firstName lastName');
-    
-    // Calculate additional metrics
-    const analytics = {
-      ...stats,
-      campaign: {
-        id: campaign._id,
-        name: campaign.name,
-        subject: campaign.subject,
-        status: campaign.status,
-        createdAt: campaign.createdAt,
-        sentAt: campaign.sentAt,
-        scheduledAt: campaign.scheduledAt
-      },
-      recentActivity,
-      performance: {
-        deliveryRate: stats.deliveryRate,
-        openRate: stats.openRate,
-        clickRate: stats.clickRate,
-        bounceRate: stats.bounceRate,
-        unsubscribeRate: stats.unsubscribeRate
-      }
-    };
-    
-    res.json(analytics);
-    
-  } catch (error) {
-    res.status(500);
-    throw new Error(`Failed to get campaign analytics: ${error.message}`);
-  }
-}));
-
-/**
  * @desc    Get email queue status
  * @route   GET /api/campaigns/queue/status
  * @access  Private
@@ -288,7 +290,7 @@ router.post('/test-email', protect, asyncHandler(async (req, res) => {
   }
   
   try {
-    const result = await mailgunService.sendEmail({
+    const result = await emailService.sendEmail({
       to,
       subject: `[TEST] ${subject}`,
       html: htmlContent,
@@ -322,7 +324,7 @@ router.post('/validate-emails', protect, asyncHandler(async (req, res) => {
   try {
     const validationResults = await Promise.all(
       emails.map(async (email) => {
-        const result = await mailgunService.validateEmail(email);
+        const result = await emailService.validateEmail(email);
         return { email, ...result };
       })
     );
@@ -351,16 +353,18 @@ router.post('/validate-emails', protect, asyncHandler(async (req, res) => {
  */
 router.get('/suppressions/:type', protect, asyncHandler(async (req, res) => {
   const { type } = req.params;
-  const validTypes = ['bounces', 'unsubscribes', 'complaints'];
-  
-  if (!validTypes.includes(type)) {
+  const map = { bounces: 'bounce', unsubscribes: 'unsubscribe', complaints: 'complaint' };
+  const suppressionType = map[type];
+  if (!suppressionType) {
     res.status(400);
-    throw new Error(`Invalid suppression type. Must be one of: ${validTypes.join(', ')}`);
+    throw new Error(`Invalid suppression type. Must be one of: ${Object.keys(map).join(', ')}`);
   }
-  
+  const Suppression = require('../models/Suppression');
   try {
-    const suppressionList = await mailgunService.getSuppressionList(type);
-    res.json(suppressionList);
+    const query = { type: suppressionType };
+    if (req.user && req.user.organization) query.organization = req.user.organization;
+    const items = await Suppression.find(query).lean();
+    res.json({ type, count: items.length, items });
   } catch (error) {
     res.status(500);
     throw new Error(`Failed to get suppression list: ${error.message}`);
@@ -374,25 +378,28 @@ router.get('/suppressions/:type', protect, asyncHandler(async (req, res) => {
  */
 router.post('/suppressions/:type', protect, asyncHandler(async (req, res) => {
   const { type } = req.params;
-  const { email, reason } = req.body;
-  const validTypes = ['bounces', 'unsubscribes', 'complaints'];
-  
-  if (!validTypes.includes(type)) {
+  const { email, reason, source = 'user' } = req.body;
+  const map = { bounces: 'bounce', unsubscribes: 'unsubscribe', complaints: 'complaint' };
+  const suppressionType = map[type];
+  if (!suppressionType) {
     res.status(400);
-    throw new Error(`Invalid suppression type. Must be one of: ${validTypes.join(', ')}`);
+    throw new Error(`Invalid suppression type. Must be one of: ${Object.keys(map).join(', ')}`);
   }
-  
   if (!email) {
     res.status(400);
     throw new Error('Email address is required');
   }
-  
+  const Suppression = require('../models/Suppression');
   try {
-    const result = await mailgunService.addToSuppressionList(type, email, reason);
-    res.json({
-      message: `Email added to ${type} suppression list`,
-      result
+    const doc = await Suppression.recordEvent({
+      email,
+      type: suppressionType,
+      reason: reason || `Manual ${suppressionType}`,
+      source,
+      user: req.user?._id,
+      organization: req.user?.organization || null
     });
+    res.status(201).json({ message: 'Suppressed', item: doc });
   } catch (error) {
     res.status(500);
     throw new Error(`Failed to add email to suppression list: ${error.message}`);
@@ -406,19 +413,18 @@ router.post('/suppressions/:type', protect, asyncHandler(async (req, res) => {
  */
 router.delete('/suppressions/:type/:email', protect, asyncHandler(async (req, res) => {
   const { type, email } = req.params;
-  const validTypes = ['bounces', 'unsubscribes', 'complaints'];
-  
-  if (!validTypes.includes(type)) {
+  const map = { bounces: 'bounce', unsubscribes: 'unsubscribe', complaints: 'complaint' };
+  const suppressionType = map[type];
+  if (!suppressionType) {
     res.status(400);
-    throw new Error(`Invalid suppression type. Must be one of: ${validTypes.join(', ')}`);
+    throw new Error(`Invalid suppression type. Must be one of: ${Object.keys(map).join(', ')}`);
   }
-  
+  const Suppression = require('../models/Suppression');
   try {
-    const result = await mailgunService.removeFromSuppressionList(type, email);
-    res.json({
-      message: `Email removed from ${type} suppression list`,
-      result
-    });
+    const query = { email: email.toLowerCase(), type: suppressionType };
+    if (req.user && req.user.organization) query.organization = req.user.organization;
+    await Suppression.deleteOne(query);
+    res.json({ message: 'Removed from suppression list', email, type });
   } catch (error) {
     res.status(500);
     throw new Error(`Failed to remove email from suppression list: ${error.message}`);

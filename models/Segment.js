@@ -18,7 +18,15 @@ const filterSchema = new mongoose.Schema({
       'customFields',
       'emailOpens',
       'emailClicks',
-      'campaignActivity'
+      'campaignActivity',
+      'engagementScore',
+      'lifetimeValue',
+      'purchaseCount',
+      'lastPurchaseDate',
+      'subscriptionStatus',
+      'bounceCount',
+      'complaintCount',
+      'unsubscribeDate'
     ]
   },
   operator: {
@@ -92,6 +100,11 @@ const segmentSchema = new mongoose.Schema({
   cachedQuery: {
     type: Object,
     default: {}
+  },
+  // Custom query for advanced segmentation
+  customQuery: {
+    type: Object,
+    default: {}
   }
 }, {
   timestamps: true
@@ -101,23 +114,13 @@ const segmentSchema = new mongoose.Schema({
 segmentSchema.index({ user: 1, isActive: 1 });
 segmentSchema.index({ user: 1, name: 1 });
 
-// Method to build MongoDB query from filters
+// Method to build MongoDB query from filters (delegates to service now)
 segmentSchema.methods.buildQuery = function() {
-  if (!this.filters || this.filters.length === 0) {
-    return {};
+  if (this.customQuery && Object.keys(this.customQuery).length > 0) {
+    return this.customQuery;
   }
-
-  const conditions = this.filters.map(filter => {
-    return buildFilterCondition(filter);
-  });
-
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-
-  return this.logic === 'OR' 
-    ? { $or: conditions }
-    : { $and: conditions };
+  const { buildMongoQuery } = require('../services/segmentationService');
+  return buildMongoQuery(this.filters || [], this.logic || 'AND');
 };
 
 // Method to count matching subscribers
@@ -162,69 +165,7 @@ segmentSchema.methods.getSubscribers = async function(limit = null, skip = 0) {
 };
 
 // Helper function to build individual filter conditions
-function buildFilterCondition(filter) {
-  const { field, operator, value, secondValue } = filter;
-  
-  switch (operator) {
-    case 'equals':
-      return { [field]: value };
-      
-    case 'not_equals':
-      return { [field]: { $ne: value } };
-      
-    case 'contains':
-      return { [field]: { $regex: value, $options: 'i' } };
-      
-    case 'not_contains':
-      return { [field]: { $not: { $regex: value, $options: 'i' } } };
-      
-    case 'starts_with':
-      return { [field]: { $regex: `^${value}`, $options: 'i' } };
-      
-    case 'ends_with':
-      return { [field]: { $regex: `${value}$`, $options: 'i' } };
-      
-    case 'is_empty':
-      return { $or: [{ [field]: { $exists: false } }, { [field]: '' }, { [field]: null }] };
-      
-    case 'is_not_empty':
-      return { [field]: { $exists: true, $ne: '', $ne: null } };
-      
-    case 'greater_than':
-      return { [field]: { $gt: value } };
-      
-    case 'less_than':
-      return { [field]: { $lt: value } };
-      
-    case 'between':
-      return { [field]: { $gte: value, $lte: secondValue } };
-      
-    case 'in':
-      return { [field]: { $in: Array.isArray(value) ? value : [value] } };
-      
-    case 'not_in':
-      return { [field]: { $nin: Array.isArray(value) ? value : [value] } };
-      
-    case 'before':
-      return { [field]: { $lt: new Date(value) } };
-      
-    case 'after':
-      return { [field]: { $gt: new Date(value) } };
-      
-    case 'within_days':
-      const withinDate = new Date();
-      withinDate.setDate(withinDate.getDate() - parseInt(value));
-      return { [field]: { $gte: withinDate } };
-      
-    case 'more_than_days_ago':
-      const moreThanDate = new Date();
-      moreThanDate.setDate(moreThanDate.getDate() - parseInt(value));
-      return { [field]: { $lt: moreThanDate } };
-      
-    default:
-      return {};
-  }
-}
+// Legacy buildFilterCondition removed in favor of segmentationService
 
 // Static method to get available filter fields with metadata
 segmentSchema.statics.getFilterFields = function() {
@@ -251,13 +192,19 @@ segmentSchema.statics.getFilterFields = function() {
       field: 'createdAt',
       label: 'Signup Date',
       type: 'date',
-      operators: ['before', 'after', 'between', 'within_days', 'more_than_days_ago']
+      operators: ['equals', 'not_equals', 'before', 'after', 'within_days', 'more_than_days_ago']
+    },
+    {
+      field: 'lastActivity',
+      label: 'Last Activity',
+      type: 'date',
+      operators: ['equals', 'not_equals', 'before', 'after', 'within_days', 'more_than_days_ago']
     },
     {
       field: 'location.country',
       label: 'Country',
       type: 'string',
-      operators: ['equals', 'not_equals', 'in', 'not_in', 'is_empty', 'is_not_empty']
+      operators: ['equals', 'not_equals', 'contains', 'not_contains', 'is_empty', 'is_not_empty']
     },
     {
       field: 'location.city',
@@ -269,7 +216,74 @@ segmentSchema.statics.getFilterFields = function() {
       field: 'location.timezone',
       label: 'Timezone',
       type: 'string',
-      operators: ['equals', 'not_equals', 'in', 'not_in', 'is_empty', 'is_not_empty']
+      operators: ['equals', 'not_equals', 'contains', 'not_contains', 'is_empty', 'is_not_empty']
+    },
+    {
+      field: 'emailOpens',
+      label: 'Email Opens',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'emailClicks',
+      label: 'Email Clicks',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'campaignActivity',
+      label: 'Campaign Activity',
+      type: 'string',
+      operators: ['equals', 'not_equals', 'contains', 'not_contains']
+    },
+    // New advanced segmentation fields
+    {
+      field: 'engagementScore',
+      label: 'Engagement Score',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'lifetimeValue',
+      label: 'Lifetime Value',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'purchaseCount',
+      label: 'Purchase Count',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'lastPurchaseDate',
+      label: 'Last Purchase Date',
+      type: 'date',
+      operators: ['equals', 'not_equals', 'before', 'after', 'within_days', 'more_than_days_ago']
+    },
+    {
+      field: 'subscriptionStatus',
+      label: 'Subscription Status',
+      type: 'string',
+      operators: ['equals', 'not_equals', 'in', 'not_in']
+    },
+    {
+      field: 'bounceCount',
+      label: 'Bounce Count',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'complaintCount',
+      label: 'Complaint Count',
+      type: 'number',
+      operators: ['equals', 'not_equals', 'greater_than', 'less_than', 'between']
+    },
+    {
+      field: 'unsubscribeDate',
+      label: 'Unsubscribe Date',
+      type: 'date',
+      operators: ['equals', 'not_equals', 'before', 'after', 'within_days', 'more_than_days_ago']
     }
   ];
 };

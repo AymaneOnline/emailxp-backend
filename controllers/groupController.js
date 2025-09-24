@@ -42,8 +42,8 @@ const createGroup = asyncHandler(async (req, res) => {
 // @route   GET /api/groups/:id
 // @access  Private
 const getGroupById = asyncHandler(async (req, res) => {
-    const group = await Group.findById(req.params.id)
-                            .populate('subscribers');
+    const id = req.params.groupId || req.params.id;
+    const group = await Group.findById(id).populate('subscribers');
 
     if (!group) {
         res.status(404);
@@ -63,7 +63,8 @@ const getGroupById = asyncHandler(async (req, res) => {
 // @route   PUT /api/groups/:id
 // @access  Private
 const updateGroup = asyncHandler(async (req, res) => {
-    const group = await Group.findById(req.params.id);
+    const id = req.params.groupId || req.params.id;
+    const group = await Group.findById(id);
 
     if (!group) {
         res.status(404);
@@ -76,7 +77,7 @@ const updateGroup = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to update this group');
     }
 
-    const updatedGroup = await Group.findByIdAndUpdate(req.params.id, req.body, {
+    const updatedGroup = await Group.findByIdAndUpdate(id, req.body, {
         new: true, // Return the updated document
     });
 
@@ -87,7 +88,8 @@ const updateGroup = asyncHandler(async (req, res) => {
 // @route   DELETE /api/groups/:id
 // @access  Private
 const deleteGroup = asyncHandler(async (req, res) => {
-    const group = await Group.findById(req.params.id);
+    const id = req.params.groupId || req.params.id;
+    const group = await Group.findById(id);
 
     if (!group) {
         res.status(404);
@@ -100,12 +102,12 @@ const deleteGroup = asyncHandler(async (req, res) => {
         throw new Error('Not authorized to delete this group');
     }
 
-    // Delete all subscribers associated with this group first
-    await Subscriber.deleteMany({ group: req.params.id });
+    // Remove the group reference from subscribers instead of deleting subscribers
+    await Subscriber.updateMany({ groups: id }, { $pull: { groups: id } });
 
     await group.deleteOne(); // Use deleteOne() for Mongoose 6+
 
-    res.status(200).json({ id: req.params.id, message: 'Group and its subscribers deleted successfully' });
+    res.status(200).json({ id, message: 'Group deleted and removed from subscribers' });
 });
 
 module.exports = {
