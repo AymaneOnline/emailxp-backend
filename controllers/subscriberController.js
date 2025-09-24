@@ -1102,14 +1102,12 @@ const handleUnsubscribeLink = asyncHandler(async (req, res) => {
         return res.status(200).send('Successfully unsubscribed');
     }
 
-    // Mark as unsubscribed
-    subscriber.status = 'unsubscribed';
-    subscriber.unsubscribedAt = new Date();
-    await subscriber.save();
+    // Delete the subscriber completely from the database
+    await Subscriber.findByIdAndDelete(subscriberId);
 
     // Log the unsubscribe event
     if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
-        console.log(`Subscriber ${subscriber._id} unsubscribed via link from campaign ${campaignId}`);
+        console.log(`Subscriber ${subscriberId} deleted via unsubscribe link from campaign ${campaignId}`);
     }
 
     // Return a simple HTML page confirming unsubscribe
