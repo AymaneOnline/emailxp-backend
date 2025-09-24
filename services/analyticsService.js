@@ -1067,6 +1067,86 @@ class AnalyticsService {
       throw error;
     }
   }
+
+  // Get dashboard overview
+  async getDashboardOverview(userId, timeframe = '30d') {
+    try {
+      const { periodStart } = this.getTimeframeDates(timeframe);
+      
+      // Aggregate all campaign analytics for the user
+      const pipeline = [
+        {
+          $match: {
+            user: new mongoose.Types.ObjectId(userId),
+            entityType: 'Campaign',
+            periodStart: { $gte: periodStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalSent: { $sum: '$metrics.sent' },
+            totalDelivered: { $sum: '$metrics.delivered' },
+            totalUniqueOpens: { $sum: '$metrics.uniqueOpens' },
+            totalUniqueClicks: { $sum: '$metrics.uniqueClicks' },
+            totalUnsubscribes: { $sum: '$metrics.unsubscribes' },
+            totalBounces: { $sum: '$metrics.bounces' },
+            totalComplaints: { $sum: '$metrics.complaints' }
+          }
+        }
+      ];
+
+      const result = await Analytics.aggregate(pipeline);
+      
+      const data = result[0] || {
+        totalSent: 0,
+        totalDelivered: 0,
+        totalUniqueOpens: 0,
+        totalUniqueClicks: 0,
+        totalUnsubscribes: 0,
+        totalBounces: 0,
+        totalComplaints: 0
+      };
+
+      // Calculate rates
+      const openRate = data.totalSent > 0 ? (data.totalUniqueOpens / data.totalSent) * 100 : 0;
+      const clickRate = data.totalSent > 0 ? (data.totalUniqueClicks / data.totalSent) * 100 : 0;
+      const unsubRate = data.totalSent > 0 ? (data.totalUnsubscribes / data.totalSent) * 100 : 0;
+      const bounceRate = data.totalSent > 0 ? (data.totalBounces / data.totalSent) * 100 : 0;
+      const complaintRate = data.totalSent > 0 ? (data.totalComplaints / data.totalSent) * 100 : 0;
+
+      // Get top campaigns
+      const topCampaigns = await Analytics.find({
+        user: new mongoose.Types.ObjectId(userId),
+        entityType: 'Campaign',
+        periodStart: { $gte: periodStart }
+      })
+      .populate('entityId', 'name subject')
+      .sort({ 'metrics.sent': -1 })
+      .limit(5)
+      .then(analytics => analytics.map(a => ({
+        campaign: a.entityId,
+        metrics: a.metrics,
+        rates: a.rates
+      })));
+
+      return {
+        overview: {
+          totalSent: data.totalSent,
+          totalDelivered: data.totalDelivered,
+          openRate: Math.round(openRate * 10) / 10,
+          clickRate: Math.round(clickRate * 10) / 10,
+          unsubRate: Math.round(unsubRate * 100) / 100,
+          bounceRate: Math.round(bounceRate * 10) / 10,
+          complaintRate: Math.round(complaintRate * 10) / 10
+        },
+        topCampaigns
+      };
+    } catch (error) {
+      console.error('Error getting dashboard overview:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new AnalyticsService();
