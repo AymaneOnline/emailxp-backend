@@ -66,4 +66,11 @@ router.post('/profile-picture', protect, uploadProfilePicture, handleUploadError
 router.get('/verify-email/:token', verifyEmail); // Public route for email verification
 router.post('/send-verification-email', protect, verificationEmailLimiter, verificationCooldown, sendVerificationEmail); // send (or resend) verification email with rate limiting
 
+// Delete user (admin or the user themself)
+router.delete('/:id', protect, async (req, res, next) => {
+  // Defer to controller deleteUser
+  const { deleteUser } = require('../controllers/userController');
+  return deleteUser(req, res, next);
+});
+
 module.exports = router;

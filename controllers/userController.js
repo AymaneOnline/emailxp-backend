@@ -439,6 +439,44 @@ const sendVerificationEmail = asyncHandler(async (req, res) => {
   }
 });
 
+// @desc    Delete a user and cascade-delete related lists/subscribers
+// @route   DELETE /api/users/:id
+// @access  Private (admin or user themselves)
+const deleteUser = asyncHandler(async (req, res) => {
+  const userId = req.params.id;
+  // Authorization: allow if admin or same user
+  if (!req.user) {
+    res.status(401);
+    throw new Error('Not authorized');
+  }
+  const isAdmin = req.user.role === 'admin';
+  if (!isAdmin && String(req.user.id) !== String(userId)) {
+    res.status(403);
+    throw new Error('Forbidden');
+  }
+
+  const UserModel = require('../models/User');
+  const Group = require('../models/Group');
+  const Subscriber = require('../models/Subscriber');
+
+  const user = await UserModel.findById(userId);
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  // Delete groups owned by this user
+  await Group.deleteMany({ owner: userId }).catch(e => console.warn('deleteUser: delete groups failed', e.message));
+
+  // Delete subscribers that reference this user
+  await Subscriber.deleteMany({ user: userId }).catch(e => console.warn('deleteUser: delete subscribers failed', e.message));
+
+  // Finally remove user
+  await user.remove();
+
+  res.json({ message: 'User and related data removed' });
+});
+
 
 module.exports = {
   registerUser,
@@ -448,4 +486,5 @@ module.exports = {
   uploadProfilePictureHandler,
   verifyEmail,
   sendVerificationEmail,
+  deleteUser,
 };
