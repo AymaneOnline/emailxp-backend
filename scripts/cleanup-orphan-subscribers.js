@@ -1,11 +1,29 @@
-const connectDB = require('../config/db');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Group = require('../models/Group');
 const Subscriber = require('../models/Subscriber');
 
 async function run() {
-  await connectDB();
+  // Allow overriding the Mongo URI via --uri or use process.env.MONGO_URI
+  const uriArgIndex = process.argv.findIndex(a => a === '--uri');
+  const uri = uriArgIndex !== -1 ? process.argv[uriArgIndex + 1] : process.env.MONGO_URI;
+  if (!uri) {
+    console.error('Error: MongoDB URI not provided. Use --uri or set MONGO_URI in env.');
+    process.exit(1);
+  }
+  try {
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      maxPoolSize: 10,
+      minPoolSize: 1,
+    });
+    console.log('MongoDB Connected for cleanup');
+  } catch (e) {
+    console.error('MongoDB connection failed:', e.message);
+    process.exit(1);
+  }
   console.log('Cleaning orphan subscribers and duplicates...');
 
   const users = await User.find({}, '_id').lean();

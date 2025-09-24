@@ -456,8 +456,19 @@ const deleteUser = asyncHandler(async (req, res) => {
   }
 
   const UserModel = require('../models/User');
+
+  // Lazy requires to avoid circular deps
+  const Template = require('../models/Template');
+  const File = require('../models/File');
+  const Campaign = require('../models/Campaign');
+  const Segment = require('../models/Segment');
+  const Form = require('../models/Form');
+  const LandingPage = require('../models/LandingPage');
+  const Automation = require('../models/Automation');
+  const EmailLog = require('../models/EmailLog');
   const Group = require('../models/Group');
   const Subscriber = require('../models/Subscriber');
+  const ABTest = require('../models/ABTest');
 
   const user = await UserModel.findById(userId);
   if (!user) {
@@ -465,14 +476,50 @@ const deleteUser = asyncHandler(async (req, res) => {
     throw new Error('User not found');
   }
 
-  // Delete groups owned by this user
-  await Group.deleteMany({ owner: userId }).catch(e => console.warn('deleteUser: delete groups failed', e.message));
+  // Use a transaction to attempt an atomic cascade delete where possible
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      // Find campaigns and subscribers owned by this user so we can cleanup logs referencing them
+      const campaigns = await Campaign.find({ user: userId }).select('_id').session(session);
+      const campaignIds = campaigns.map(c => c._id);
 
-  // Delete subscribers that reference this user
-  await Subscriber.deleteMany({ user: userId }).catch(e => console.warn('deleteUser: delete subscribers failed', e.message));
+      const subscribers = await Subscriber.find({ user: userId }).select('_id').session(session);
+      const subscriberIds = subscribers.map(s => s._id);
 
-  // Finally remove user
-  await user.remove();
+      // Delete email logs for this user's campaigns or subscribers
+      if (campaignIds.length || subscriberIds.length) {
+        await EmailLog.deleteMany({
+          $or: [
+            ...(campaignIds.length ? [{ campaignId: { $in: campaignIds } }] : []),
+            ...(subscriberIds.length ? [{ subscriberId: { $in: subscriberIds } }] : [])
+          ]
+        }).session(session);
+      }
+
+      // Delete dependent resources owned by the user
+      await Template.deleteMany({ user: userId }).session(session);
+      await File.deleteMany({ user: userId }).session(session);
+      await Campaign.deleteMany({ user: userId }).session(session);
+      await Segment.deleteMany({ user: userId }).session(session);
+      await Form.deleteMany({ createdBy: userId }).session(session);
+      await LandingPage.deleteMany({ user: userId }).session(session);
+      await Automation.deleteMany({ user: userId }).session(session);
+      await ABTest.deleteMany({ user: userId }).session(session);
+
+      // Delete groups and subscribers
+      await Group.deleteMany({ user: userId }).session(session);
+      await Subscriber.deleteMany({ user: userId }).session(session);
+
+      // Finally delete the user
+      await UserModel.deleteOne({ _id: userId }).session(session);
+    });
+  } catch (err) {
+    console.warn('deleteUser transaction failed', err.message);
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 
   res.json({ message: 'User and related data removed' });
 });
