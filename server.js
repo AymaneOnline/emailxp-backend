@@ -2,6 +2,11 @@
 
 const express = require('express');
 const dotenv = require('dotenv').config();
+// Normalize FRONTEND_URL: strip trailing slash if present so CORS origin matches
+const SANITIZED_FRONTEND_URL = process.env.FRONTEND_URL ? String(process.env.FRONTEND_URL).trim().replace(/\/+$/, '') : undefined;
+if (SANITIZED_FRONTEND_URL) {
+    process.env.FRONTEND_URL = SANITIZED_FRONTEND_URL;
+}
 const cors = require('cors');
 const { errorHandler } = require('./middleware/errorMiddleware');
 const requestId = require('./middleware/requestId');
@@ -43,10 +48,10 @@ app.set('trust proxy', 1); // Trust the first proxy
 
 // Configure CORS with credentials support
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL 
-    : 'http://localhost:3000',
-  credentials: true
+    origin: process.env.NODE_ENV === 'production'
+        ? process.env.FRONTEND_URL
+        : 'http://localhost:3000',
+    credentials: true
 }));
 
 app.use(requestId);
