@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const Analytics = require('../models/Analytics');
+const Campaign = require('../models/Campaign');
 const analyticsService = require('../services/analyticsService');
 const { protect } = require('../middleware/authMiddleware');
 
