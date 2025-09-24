@@ -907,48 +907,6 @@ class AnalyticsService {
       // createdAt: { $gte: periodStart }
     });
     
-    // If no documents found for this campaign, check if there are ANY documents with engagement
-    if (trackingData.length === 0) {
-      console.log(`No tracking data found for campaign ${campaignId}, checking for ANY engaged documents...`);
-      const anyEngaged = await EmailTracking.find({
-        $or: [
-          { opens: { $exists: true, $ne: [] } },
-          { clicks: { $exists: true, $ne: [] } }
-        ]
-      });
-      console.log(`Found ${anyEngaged.length} documents with engagement in the entire DB`);
-      if (anyEngaged.length > 0) {
-        anyEngaged.forEach((doc, i) => {
-          console.log(`  Engaged doc ${i+1}: campaign=${doc.campaign}, messageId=${doc.messageId}, opens=${doc.opens?.length || 0}, clicks=${doc.clicks?.length || 0}`);
-        });
-        // Use these documents for metrics calculation
-        trackingData = anyEngaged;
-      }
-    }
-    
-    console.log(`Using ${trackingData.length} EmailTracking documents for metrics calculation`);
-    
-    // Also check for any EmailTracking documents at all
-    const allTracking = await EmailTracking.find({}).sort({createdAt: -1}).limit(20);
-    console.log(`Total EmailTracking documents in DB: ${allTracking.length}`);
-    if (allTracking.length > 0) {
-      console.log('All recent tracking documents:');
-      allTracking.forEach((doc, i) => {
-        console.log(`  ${i+1}: id=${doc._id}, campaign=${doc.campaign}, messageId=${doc.messageId}, opens=${doc.opens?.length || 0}, clicks=${doc.clicks?.length || 0}, createdAt=${doc.createdAt}`);
-      });
-    }
-    
-    if (trackingData.length > 0) {
-      console.log('Sample tracking document:', {
-        id: trackingData[0]._id,
-        campaign: trackingData[0].campaign,
-        messageId: trackingData[0].messageId,
-        opens: trackingData[0].opens?.length || 0,
-        clicks: trackingData[0].clicks?.length || 0,
-        createdAt: trackingData[0].createdAt
-      });
-    }
-    
     let sent = 0, delivered = 0, opened = 0, clicked = 0;
     const uniqueOpeners = new Set();
     const uniqueClickers = new Set();
