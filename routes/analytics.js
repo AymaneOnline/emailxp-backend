@@ -48,28 +48,81 @@ router.get('/campaigns', protect, async (req, res) => {
     
     const { periodStart } = analyticsService.getTimeframeDates(timeframe);
     
-    const query = {
+    // Get all campaigns for this user
+    const campaigns = await Campaign.find({ user: req.user._id })
+      .sort({ createdAt: -1 });
+    
+    // Get analytics for campaigns that have them
+    const analyticsQuery = {
       user: req.user._id,
       type: 'campaign',
       periodStart: { $gte: periodStart }
     };
-
+    
+    const analytics = await Analytics.find(analyticsQuery)
+      .populate('entityId', 'name subject status');
+    
+    // Create a map of analytics by campaign ID
+    const analyticsMap = new Map();
+    analytics.forEach(analytic => {
+      analyticsMap.set(analytic.entityId._id.toString(), analytic);
+    });
+    
+    // Merge campaigns with analytics data
+    const campaignsWithAnalytics = campaigns.map(campaign => {
+      const analytic = analyticsMap.get(campaign._id.toString());
+      if (analytic) {
+        return {
+          ...campaign.toObject(),
+          opens: analytic.metrics?.uniqueOpens || 0,
+          clicks: analytic.metrics?.uniqueClicks || 0,
+          totalRecipients: analytic.metrics?.sent || campaign.totalRecipients || 0,
+          openRate: analytic.rates?.openRate || 0,
+          clickRate: analytic.rates?.clickRate || 0,
+          metrics: analytic.metrics,
+          rates: analytic.rates,
+          hasAnalytics: true
+        };
+      } else {
+        // For campaigns without analytics, use stored counters or default to 0
+        return {
+          ...campaign.toObject(),
+          opens: campaign.opens || 0,
+          clicks: campaign.clicks || 0,
+          totalRecipients: campaign.totalRecipients || 0,
+          openRate: campaign.totalRecipients > 0 ? ((campaign.opens || 0) / campaign.totalRecipients) * 100 : 0,
+          clickRate: campaign.totalRecipients > 0 ? ((campaign.clicks || 0) / campaign.totalRecipients) * 100 : 0,
+          hasAnalytics: false
+        };
+      }
+    });
+    
+    // Apply sorting
     const sortOptions = {};
-    sortOptions[`rates.${sortBy}`] = sortOrder === 'desc' ? -1 : 1;
-
-    const analytics = await Analytics.find(query)
-      .populate('entityId', 'name subject status')
-      .sort(sortOptions)
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Analytics.countDocuments(query);
-
+    if (sortBy === 'openRate') {
+      sortOptions.openRate = sortOrder === 'desc' ? -1 : 1;
+    } else if (sortBy === 'clickRate') {
+      sortOptions.clickRate = sortOrder === 'desc' ? -1 : 1;
+    } else {
+      sortOptions.createdAt = -1; // Default sort by creation date
+    }
+    
+    campaignsWithAnalytics.sort((a, b) => {
+      const aVal = a[sortBy] || 0;
+      const bVal = b[sortBy] || 0;
+      return sortOrder === 'desc' ? bVal - aVal : aVal - bVal;
+    });
+    
+    // Apply pagination
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedCampaigns = campaignsWithAnalytics.slice(startIndex, endIndex);
+    
     res.json({
-      analytics,
-      total,
+      campaigns: paginatedCampaigns,
+      total: campaignsWithAnalytics.length,
       page: parseInt(page),
-      pages: Math.ceil(total / limit)
+      pages: Math.ceil(campaignsWithAnalytics.length / limit)
     });
   } catch (error) {
     console.error('Error fetching campaigns analytics:', error);
