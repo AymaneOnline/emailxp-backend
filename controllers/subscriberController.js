@@ -168,8 +168,11 @@ const getSubscribers = asyncHandler(async (req, res) => {
         query.groups = groupId;
     }
 
+    // Default to excluding unsubscribed users unless status filter is explicitly provided
     if (status) {
         query.status = status;
+    } else {
+        query.status = { $ne: 'unsubscribed' }; // Exclude unsubscribed by default
     }
 
     // tag filter removed
@@ -239,8 +242,11 @@ const getSubscribersByGroup = asyncHandler(async (req, res) => {
 
     const query = { groups: groupId, user: req.user.id };
 
+    // Default to excluding unsubscribed users unless status filter is explicitly provided
     if (status) {
         query.status = status;
+    } else {
+        query.status = { $ne: 'unsubscribed' }; // Exclude unsubscribed by default
     }
 
     if (search) {
@@ -1102,12 +1108,14 @@ const handleUnsubscribeLink = asyncHandler(async (req, res) => {
         return res.status(200).send('Successfully unsubscribed');
     }
 
-    // Delete the subscriber completely from the database
-    await Subscriber.findByIdAndDelete(subscriberId);
+    // Mark as unsubscribed (industry standard - don't delete for compliance)
+    subscriber.status = 'unsubscribed';
+    subscriber.unsubscribedAt = new Date();
+    await subscriber.save();
 
     // Log the unsubscribe event
     if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
-        console.log(`Subscriber ${subscriberId} deleted via unsubscribe link from campaign ${campaignId}`);
+        console.log(`Subscriber ${subscriber._id} unsubscribed via link from campaign ${campaignId}`);
     }
 
     // Return a simple HTML page confirming unsubscribe
