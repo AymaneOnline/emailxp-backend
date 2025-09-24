@@ -20,7 +20,8 @@ const bulkImportSubscribers = asyncHandler(async (req, res) => {
         const existingEmails = new Map(
             (await Subscriber.find({ 
                 user: req.user.id,
-                email: { $in: subscribers.map(s => s.email.toLowerCase()) }
+                email: { $in: subscribers.map(s => s.email.toLowerCase()) },
+                isDeleted: false
             }).select('email tags')).map(s => [s.email, s])
         );
 
