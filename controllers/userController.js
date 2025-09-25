@@ -89,7 +89,7 @@ const registerUser = asyncHandler(async (req, res) => {
         role: 'admin', // First user in organization becomes admin
         organization: organization._id,
         isVerified: false, // Default to false
-        isProfileComplete: false, // Default to false
+        isProfileComplete: true, // Set to true since all required fields are provided during registration
         website: normalizedWebsite || '',
         // verificationToken and verificationTokenExpires are NOT set here initially
       };
@@ -172,6 +172,12 @@ const loginUser = asyncHandler(async (req, res) => {
   }
 
   if (user && passwordOk) {
+    // Check if profile should be marked as complete
+    if (user.companyOrOrganization && user.name && user.email && !user.isProfileComplete) {
+      user.isProfileComplete = true;
+      await user.save();
+    }
+
     res.json({
       _id: user._id,
       companyOrOrganization: user.companyOrOrganization,
