@@ -133,6 +133,8 @@ class DomainAuthService {
       query.status = options.status;
     }
 
+    console.log('listDomains query:', query, 'options:', options);
+
     try {
       const domains = await DomainAuthentication.find(query)
         .sort(sort)
@@ -141,6 +143,8 @@ class DomainAuthService {
         .lean();
 
       const total = await DomainAuthentication.countDocuments(query);
+
+      console.log('listDomains found:', domains.length, 'total:', total);
 
       return {
         domains,

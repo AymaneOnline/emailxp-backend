@@ -41,7 +41,11 @@ router.get('/', protect, asyncHandler(async (req, res) => {
     });
   } catch (error) {
     console.error('Error in GET /api/sending-domains:', error);
-    throw error;
+    if (process.env.NODE_ENV !== 'production') {
+      res.status(500).json({ error: error.message, stack: error.stack });
+    } else {
+      throw error;
+    }
   }
 }));
 
