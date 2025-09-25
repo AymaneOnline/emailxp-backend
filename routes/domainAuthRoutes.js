@@ -57,21 +57,30 @@ router.post('/', protect, domainCreationLimiter, asyncHandler(async (req, res) =
     throw new Error('Domain is required');
   }
 
-  const record = await domainAuthService.createDomain({
-    domain,
-    organization: req.user.organization || null,
-    user: req.user._id
-  });
+  try {
+    const record = await domainAuthService.createDomain({
+      domain,
+      organization: req.user.organization || null,
+      user: req.user._id
+    });
 
-  res.status(201).json({
-    domain: record.domain,
-    dkim: domainAuthService.buildDkimRecord(record),
-    spf: domainAuthService.buildSpfRecord(record.domain),
-    tracking: domainAuthService.buildTrackingCname(record),
-    status: record.status,
-    id: record._id,
-    isPrimary: record.isPrimary
-  });
+    res.status(201).json({
+      domain: record.domain,
+      dkim: domainAuthService.buildDkimRecord(record),
+      spf: domainAuthService.buildSpfRecord(record.domain),
+      tracking: domainAuthService.buildTrackingCname(record),
+      status: record.status,
+      id: record._id,
+      isPrimary: record.isPrimary
+    });
+  } catch (error) {
+    if (error.message.includes('already registered') || error.message.includes('Domain')) {
+      res.status(400);
+    } else {
+      res.status(500);
+    }
+    throw error;
+  }
 }));
 
 // GET /api/sending-domains/:id - Get specific domain details
