@@ -10,6 +10,9 @@ const {
   uploadProfilePictureHandler,
   verifyEmail,
   sendVerificationEmail, // Import the renamed function
+  initiateAccountDeletion,
+  confirmAccountDeletion,
+  cancelAccountDeletion,
 } = require('../controllers/userController');
 const rateLimit = require('express-rate-limit');
 
@@ -65,6 +68,11 @@ router.put('/profile', protect, updateUserProfile);
 router.post('/profile-picture', protect, uploadProfilePicture, handleUploadError, uploadProfilePictureHandler);
 router.get('/verify-email/:token', verifyEmail); // Public route for email verification
 router.post('/send-verification-email', protect, verificationEmailLimiter, verificationCooldown, sendVerificationEmail); // send (or resend) verification email with rate limiting
+
+// Account deletion routes
+router.post('/initiate-deletion', protect, initiateAccountDeletion);
+router.post('/confirm-deletion/:token', confirmAccountDeletion);
+router.post('/cancel-deletion', protect, cancelAccountDeletion);
 
 // Delete user (admin or the user themself)
 router.delete('/:id', protect, async (req, res, next) => {
