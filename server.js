@@ -51,7 +51,6 @@ app.set('trust proxy', 1); // Trust the first proxy
 // Build allowed origins from environment and sensible defaults. This
 // helps avoid "Not allowed by CORS" for internal or server-originated
 // requests (scheduler, cron jobs, server-to-server calls).
-const cors = require('cors');
 const allowedFromEnv = (process.env.CORS_ALLOW || process.env.ALLOW_ORIGINS || '').split(',').map(s => s && s.trim()).filter(Boolean);
 const allowedOrigins = [
     'http://localhost:3000', // Local development
