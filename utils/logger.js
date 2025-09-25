@@ -16,6 +16,13 @@ const logger = {
             console.info(...args);
         }
     },
+    debug: (...args) => {
+        // Debug-level logs for development only
+        if (!IS_PRODUCTION) {
+            // Use console.debug if available, fall back to console.log
+            (console.debug || console.log)(...args);
+        }
+    },
     warn: (...args) => {
         // Warnings are often useful in both dev and production
         console.warn(...args);
