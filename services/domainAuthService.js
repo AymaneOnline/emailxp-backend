@@ -216,11 +216,15 @@ class DomainAuthService {
         throw new Error('Domain not found');
       }
 
+      // Normalize IDs to strings for comparison (handle ObjectId inputs)
+      const orgIdStr = organizationId ? String(organizationId) : null;
+      const userIdStr = userId ? String(userId) : null;
+
       // Check ownership
-      if (organizationId && domain.organization?.toString() !== organizationId) {
+      if (orgIdStr && domain.organization?.toString() !== orgIdStr) {
         throw new Error('Unauthorized to delete this domain');
       }
-      if (!organizationId && domain.user?.toString() !== userId) {
+      if (!orgIdStr && domain.user?.toString() !== userIdStr) {
         throw new Error('Unauthorized to delete this domain');
       }
 
@@ -252,11 +256,15 @@ class DomainAuthService {
         throw new Error('Domain not found');
       }
 
+      // Normalize IDs to strings for comparison (handle ObjectId inputs)
+      const orgIdStr = organizationId ? String(organizationId) : null;
+      const userIdStr = userId ? String(userId) : null;
+
       // Check ownership
-      if (organizationId && domain.organization?.toString() !== organizationId) {
+      if (orgIdStr && domain.organization?.toString() !== orgIdStr) {
         throw new Error('Unauthorized to modify this domain');
       }
-      if (!organizationId && domain.user?.toString() !== userId) {
+      if (!orgIdStr && domain.user?.toString() !== userIdStr) {
         throw new Error('Unauthorized to modify this domain');
       }
 
