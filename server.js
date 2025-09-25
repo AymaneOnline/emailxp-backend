@@ -187,6 +187,8 @@ if (process.env.NODE_ENV !== 'test') {
             console.warn('Domain reverification cron failed', e.message);
         }
     });
+
+    // no dev-only startup dumps in production code
 }
 
 module.exports = app; // export for tests

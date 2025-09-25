@@ -211,6 +211,7 @@ class DomainAuthService {
 
   async deleteDomain(id, userId, organizationId = null) {
     try {
+      logger.info('Attempting to delete domain', { domainId: id, userId: userId?.toString(), organizationId: organizationId?.toString() });
       const domain = await DomainAuthentication.findById(id);
       if (!domain) {
         throw new Error('Domain not found');
@@ -222,9 +223,11 @@ class DomainAuthService {
 
       // Check ownership
       if (orgIdStr && domain.organization?.toString() !== orgIdStr) {
+        logger.warn('Delete denied - organization mismatch', { domainId: id, domainOrg: domain.organization?.toString(), callerOrg: orgIdStr });
         throw new Error('Unauthorized to delete this domain');
       }
       if (!orgIdStr && domain.user?.toString() !== userIdStr) {
+        logger.warn('Delete denied - user mismatch', { domainId: id, domainUser: domain.user?.toString(), callerUser: userIdStr });
         throw new Error('Unauthorized to delete this domain');
       }
 
