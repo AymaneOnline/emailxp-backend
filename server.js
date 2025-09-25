@@ -47,22 +47,36 @@ const app = express();
 app.set('trust proxy', 1); // Trust the first proxy
 
 // Configure CORS with credentials support
+// Configure CORS with credentials support and a flexible allowlist.
+// Build allowed origins from environment and sensible defaults. This
+// helps avoid "Not allowed by CORS" for internal or server-originated
+// requests (scheduler, cron jobs, server-to-server calls).
+const cors = require('cors');
+const allowedFromEnv = (process.env.CORS_ALLOW || process.env.ALLOW_ORIGINS || '').split(',').map(s => s && s.trim()).filter(Boolean);
+const allowedOrigins = [
+    'http://localhost:3000', // Local development
+    'https://emailxp-frontend-production.up.railway.app', // Production frontend
+    process.env.FRONTEND_URL, // Configured frontend URL
+    process.env.BACKEND_URL,  // Allow if backend calls itself or proxies set this
+    ...allowedFromEnv
+].filter(Boolean);
+
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
+        // Allow requests with no origin (curl, server-to-server, native apps)
         if (!origin) return callback(null, true);
 
-        const allowedOrigins = [
-            'http://localhost:3000', // Local development
-            'https://emailxp-frontend-production.up.railway.app', // Production frontend
-            process.env.FRONTEND_URL // Environment variable
-        ].filter(Boolean); // Remove any undefined values
+        // Allow same-origin requests where origin matches our backend URL
+        const serverUrl = (process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? undefined : `http://localhost:${process.env.PORT || 5000}`));
+        if (serverUrl && origin === serverUrl) return callback(null, true);
 
         if (allowedOrigins.includes(origin)) {
             return callback(null, true);
-        } else {
-            return callback(new Error('Not allowed by CORS'));
         }
+
+        // Diagnostic log to help debugging blocked origins
+        console.warn('[CORS] Blocked origin:', origin, 'Allowed list:', allowedOrigins);
+        return callback(new Error('Not allowed by CORS'));
     },
     credentials: true
 }));
