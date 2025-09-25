@@ -192,6 +192,7 @@ router.put('/:id/primary', protect, asyncHandler(async (req, res) => {
 
 // DELETE /api/sending-domains/:id - Delete domain
 router.delete('/:id', protect, asyncHandler(async (req, res) => {
+  logger.info('DELETE /api/sending-domains/:id called', { params: req.params, userId: req.user._id?.toString(), organization: req.user.organization?.toString() });
   const result = await domainAuthService.deleteDomain(
     req.params.id,
     req.user._id,
