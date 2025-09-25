@@ -48,9 +48,22 @@ app.set('trust proxy', 1); // Trust the first proxy
 
 // Configure CORS with credentials support
 app.use(cors({
-    origin: process.env.NODE_ENV === 'production'
-        ? process.env.FRONTEND_URL
-        : 'http://localhost:3000',
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+            'http://localhost:3000', // Local development
+            'https://emailxp-frontend-production.up.railway.app', // Production frontend
+            process.env.FRONTEND_URL // Environment variable
+        ].filter(Boolean); // Remove any undefined values
+
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        } else {
+            return callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 
