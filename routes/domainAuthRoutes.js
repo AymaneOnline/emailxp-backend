@@ -10,34 +10,39 @@ const router = express.Router();
 
 // GET /api/sending-domains - List domains with pagination and filtering
 router.get('/', protect, asyncHandler(async (req, res) => {
-  const { page, limit, search, status } = req.query;
-  const options = {
-    page: parseInt(page) || 1,
-    limit: Math.min(parseInt(limit) || 20, 100), // Max 100 per page
-    search,
-    status
-  };
+  try {
+    const { page, limit, search, status } = req.query;
+    const options = {
+      page: parseInt(page) || 1,
+      limit: Math.min(parseInt(limit) || 20, 100), // Max 100 per page
+      search,
+      status
+    };
 
-  const result = await domainAuthService.listDomains(
-    { organization: req.user.organization || null },
-    options
-  );
+    const result = await domainAuthService.listDomains(
+      { organization: req.user.organization || null },
+      options
+    );
 
-  res.json({
-    domains: result.domains.map(d => ({
-      _id: d._id,
-      domain: d.domain,
-      status: d.status,
-      dkimVerified: d.dkimVerified,
-      spfVerified: d.spfVerified,
-      trackingVerified: d.trackingVerified,
-      lastCheckedAt: d.lastCheckedAt,
-      isPrimary: d.isPrimary,
-      error: d.error,
-      createdAt: d.createdAt
-    })),
-    pagination: result.pagination
-  });
+    res.json({
+      domains: result.domains.map(d => ({
+        _id: d._id,
+        domain: d.domain,
+        status: d.status,
+        dkimVerified: d.dkimVerified,
+        spfVerified: d.spfVerified,
+        trackingVerified: d.trackingVerified,
+        lastCheckedAt: d.lastCheckedAt,
+        isPrimary: d.isPrimary,
+        error: d.error,
+        createdAt: d.createdAt
+      })),
+      pagination: result.pagination
+    });
+  } catch (error) {
+    console.error('Error in GET /api/sending-domains:', error);
+    throw error;
+  }
 }));
 
 // GET /api/sending-domains/stats - Get domain statistics
