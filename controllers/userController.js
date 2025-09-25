@@ -524,6 +524,189 @@ const deleteUser = asyncHandler(async (req, res) => {
   res.json({ message: 'User and related data removed' });
 });
 
+// @desc    Initiate account deletion
+// @route   POST /api/users/initiate-deletion
+// @access  Private
+const initiateAccountDeletion = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { password, reason } = req.body;
+
+  if (!password) {
+    res.status(400);
+    throw new Error('Password is required to initiate account deletion');
+  }
+
+  // Get user with password
+  const user = await User.findById(userId).select('+password');
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  // Verify password
+  const isPasswordValid = await user.matchPassword(password);
+  if (!isPasswordValid) {
+    res.status(401);
+    throw new Error('Invalid password');
+  }
+
+  // Check if deletion already requested
+  if (user.deletionRequestedAt) {
+    res.status(400);
+    throw new Error('Account deletion already requested. Check your email for confirmation instructions.');
+  }
+
+  // Generate deletion token
+  const deletionToken = crypto.randomBytes(32).toString('hex');
+  const deletionTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+  // Update user with deletion request
+  user.deletionRequestedAt = new Date();
+  user.deletionToken = deletionToken;
+  user.deletionTokenExpires = deletionTokenExpires;
+  await user.save();
+
+  // Send confirmation email
+  const deletionUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/settings/account/delete/${deletionToken}`;
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Confirm Account Deletion - EmailXP',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #dc2626;">Account Deletion Request</h2>
+          <p>Hello ${user.name},</p>
+          <p>You have requested to delete your EmailXP account. This action <strong>cannot be undone</strong> and will permanently delete:</p>
+          <ul>
+            <li>All your campaigns and email data</li>
+            <li>All subscriber lists and contacts</li>
+            <li>All templates and designs</li>
+            <li>All analytics and reports</li>
+            <li>Your account settings and profile</li>
+          </ul>
+          <p>If you did not request this deletion, please ignore this email. Your account will remain active.</p>
+          <p>To confirm deletion, click the button below:</p>
+          <a href="${deletionUrl}" style="background-color: #dc2626; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 16px 0;">Confirm Account Deletion</a>
+          <p style="color: #6b7280; font-size: 14px;">This link will expire in 24 hours.</p>
+          <p>If the button doesn't work, copy and paste this URL into your browser:<br>
+          <span style="word-break: break-all; color: #6b7280;">${deletionUrl}</span></p>
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0;">
+          <p style="color: #6b7280; font-size: 14px;">If you have any questions, please contact our support team.</p>
+        </div>
+      `
+    });
+  } catch (emailError) {
+    console.error('Failed to send deletion confirmation email:', emailError);
+    // Reset deletion request on email failure
+    user.deletionRequestedAt = null;
+    user.deletionToken = null;
+    user.deletionTokenExpires = null;
+    await user.save();
+    throw new Error('Failed to send confirmation email. Please try again.');
+  }
+
+  res.json({
+    message: 'Account deletion request initiated. Please check your email for confirmation instructions.',
+    expiresAt: deletionTokenExpires
+  });
+});
+
+// @desc    Confirm account deletion
+// @route   POST /api/users/confirm-deletion/:token
+// @access  Public
+const confirmAccountDeletion = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+
+  if (!token) {
+    res.status(400);
+    throw new Error('Deletion token is required');
+  }
+
+  // Find user with valid deletion token
+  const user = await User.findOne({
+    deletionToken: token,
+    deletionTokenExpires: { $gt: new Date() }
+  });
+
+  if (!user) {
+    res.status(400);
+    throw new Error('Invalid or expired deletion token');
+  }
+
+  // Perform the actual deletion
+  const session = await mongoose.startSession();
+
+  try {
+    await session.withTransaction(async () => {
+      // Delete dependent resources owned by the user
+      await mongoose.model('Template').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('File').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('Campaign').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('Segment').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('Form').deleteMany({ createdBy: user._id }).session(session);
+      await mongoose.model('LandingPage').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('Automation').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('ABTest').deleteMany({ user: user._id }).session(session);
+
+      // Delete groups and subscribers
+      await mongoose.model('Group').deleteMany({ user: user._id }).session(session);
+      await mongoose.model('Subscriber').deleteMany({ user: user._id }).session(session);
+
+      // Delete domain authentications
+      await mongoose.model('DomainAuthentication').deleteMany({ user: user._id }).session(session);
+
+      // Delete organization if user is the only member
+      if (user.organization) {
+        const memberCount = await User.countDocuments({ organization: user.organization });
+        if (memberCount === 1) {
+          await mongoose.model('Organization').deleteOne({ _id: user.organization }).session(session);
+        }
+      }
+
+      // Finally delete the user
+      await User.deleteOne({ _id: user._id }).session(session);
+    });
+  } catch (err) {
+    console.error('Account deletion transaction failed:', err.message);
+    throw new Error('Failed to delete account. Please contact support.');
+  } finally {
+    await session.endSession();
+  }
+
+  res.json({
+    message: 'Your account has been permanently deleted. We\'re sorry to see you go.'
+  });
+});
+
+// @desc    Cancel account deletion
+// @route   POST /api/users/cancel-deletion
+// @access  Private
+const cancelAccountDeletion = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  if (!user.deletionRequestedAt) {
+    res.status(400);
+    throw new Error('No account deletion request found');
+  }
+
+  // Clear deletion request
+  user.deletionRequestedAt = null;
+  user.deletionToken = null;
+  user.deletionTokenExpires = null;
+  await user.save();
+
+  res.json({
+    message: 'Account deletion request has been cancelled.'
+  });
+});
+
 
 module.exports = {
   registerUser,
@@ -534,4 +717,7 @@ module.exports = {
   verifyEmail,
   sendVerificationEmail,
   deleteUser,
+  initiateAccountDeletion,
+  confirmAccountDeletion,
+  cancelAccountDeletion,
 };

@@ -197,7 +197,20 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: false
     },
-    twoFactorSecret: String,
+    // ACCOUNT DELETION
+    deletionRequestedAt: {
+      type: Date,
+      default: null
+    },
+    deletionToken: {
+      type: String,
+      default: null
+    },
+    deletionTokenExpires: {
+      type: Date,
+      default: null
+    },
+    // END ACCOUNT DELETION
     twoFactorBackupCodes: [String],
     
     // API ACCESS
