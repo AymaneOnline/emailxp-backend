@@ -44,6 +44,16 @@ class DomainAuthService {
         domainId: record._id.toString()
       });
 
+      // Fire-and-forget DNS verification so newly created domains get checked immediately.
+      // Do not block the create flow; log errors if verification fails.
+      (async () => {
+        try {
+          await this.verifyDns(record);
+        } catch (e) {
+          logger.warn('Background domain verification failed', { domain: record.domain, error: e.message });
+        }
+      })();
+
       return record;
     } catch (error) {
       if (error.code === 11000) {
@@ -343,7 +353,8 @@ class DomainAuthService {
       if (dkimRecord) {
         try {
           const txt = await dns.resolveTxt(dkimRecord.name);
-          const records = txt.flat();
+          // dns.resolveTxt returns an array of arrays (chunks per TXT record). Join chunks per record.
+          const records = txt.map(recChunks => recChunks.join(''));
           dkimVerified = records.some(str => str.includes(domainAuth.dkim.publicKey.slice(0, 25)));
           if (!dkimVerified) {
             logger.debug('DKIM verification failed', {
@@ -360,9 +371,9 @@ class DomainAuthService {
 
       // Verify SPF record
       try {
-        const spfTxt = await dns.resolveTxt(spfRecord.name);
-        const records = spfTxt.flat();
-        spfVerified = records.some(str => str.includes('spf.resend.com'));
+  const spfTxt = await dns.resolveTxt(spfRecord.name);
+  const records = spfTxt.map(recChunks => recChunks.join(''));
+  spfVerified = records.some(str => str.includes('spf.resend.com'));
         if (!spfVerified) {
           logger.debug('SPF verification failed', {
             domain: domainAuth.domain,

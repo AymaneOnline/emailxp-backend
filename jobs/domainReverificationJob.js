@@ -8,9 +8,12 @@ const logger = require('../utils/logger');
 
 async function runDomainReverificationBatch({ limit = 25, retryLimitPerRun = 20 } = {}) {
   const cutoff = new Date(Date.now() - 1000 * 60 * 30); // only recheck if >30m old
+  // Include records where lastCheckedAt is older than cutoff OR is missing (newly created)
   const candidates = await DomainAuthentication.find({
-    lastCheckedAt: { $lte: cutoff },
-    status: { $in: ['verified','partially_verified','pending'] }
+    $and: [
+      { status: { $in: ['verified','partially_verified','pending'] } },
+      { $or: [ { lastCheckedAt: { $lte: cutoff } }, { lastCheckedAt: { $exists: false } }, { lastCheckedAt: null } ] }
+    ]
   }).sort({ lastCheckedAt: 1 }).limit(limit);
 
   if (!candidates.length) return { checked: 0, updated: 0, regressions: 0 };
