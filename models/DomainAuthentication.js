@@ -26,8 +26,12 @@ const DomainAuthSchema = new mongoose.Schema({
   bounceToken: { type: String, index: true },
   lastCheckedAt: { type: Date },
   status: { type: String, enum: ['pending','partially_verified','verified','error'], default: 'pending', index: true },
-  error: { type: String }
-  ,isPrimary: { type: Boolean, default: false, index: true }
+  error: { type: String },
+  dkimError: { type: String, default: null },
+  spfError: { type: String, default: null },
+  trackingError: { type: String, default: null },
+  mxError: { type: String, default: null },
+  isPrimary: { type: Boolean, default: false, index: true }
 }, { timestamps: true });
 
 

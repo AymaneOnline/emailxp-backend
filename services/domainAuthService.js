@@ -2,15 +2,19 @@ const crypto = require('crypto');
 const dns = require('dns').promises;
 const DomainAuthentication = require('../models/DomainAuthentication');
 const logger = require('../utils/logger');
+const { encrypt, decrypt } = require('../utils/crypto');
 
 function generateDkimKeyPair() {
-  // NOTE: For production, use a proper DKIM library. Here we simulate key generation.
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  // Use a stronger DKIM key (2048 bits) and return normalized publicKey (base64 without headers)
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pubPem = publicKey.export({ type: 'spki', format: 'pem' });
+  const normalized = pubPem
+    .replace(/-----BEGIN PUBLIC KEY-----/, '')
+    .replace(/-----END PUBLIC KEY-----/, '')
+    .replace(/\n/g, '')
+    .trim();
   return {
-    publicKey: publicKey.export({ type: 'spki', format: 'pem' })
-      .replace(/-----BEGIN PUBLIC KEY-----/,'')
-      .replace(/-----END PUBLIC KEY-----/,'')
-      .replace(/\n/g,''),
+    publicKey: normalized,
     privateKey: privateKey.export({ type: 'pkcs1', format: 'pem' })
   };
 }
@@ -24,15 +28,29 @@ class DomainAuthService {
     }
 
     domain = domain.toLowerCase().trim();
-    const selector = 'dkim1';
+  // Use a randomized selector to allow easier rotation and avoid collisions
+  const selector = `dkim-${crypto.randomBytes(4).toString('hex')}`;
     const { publicKey, privateKey } = generateDkimKeyPair();
+    // Encrypt private key before persistence
+    let encryptedPrivate = privateKey;
+    try {
+      encryptedPrivate = encrypt(privateKey);
+    } catch (e) {
+      // In production, fail fast and avoid storing plaintext keys
+      if (process.env.NODE_ENV === 'production') {
+        logger.error('DKIM private key encryption failed - aborting (production)', { error: e.message });
+        throw new Error('Failed to encrypt DKIM private key');
+      }
+      logger.warn('DKIM private key encryption failed - storing raw key (non-production)', { error: e.message });
+      // fallback: store raw key (not ideal) in non-production only
+    }
 
     try {
       const record = await DomainAuthentication.create({
         domain,
         organization: organization || null,
         user: user || null,
-        dkim: { selector, publicKey, privateKey },
+  dkim: { selector, publicKey, privateKey: encryptedPrivate },
         verificationTokens: { tracking: crypto.randomBytes(6).toString('hex') },
         bounceToken: crypto.randomBytes(8).toString('hex')
       });
@@ -312,8 +330,19 @@ class DomainAuthService {
 
   async regenerateDkim(id) {
     const { publicKey, privateKey } = generateDkimKeyPair();
+    const selector = `dkim-${crypto.randomBytes(4).toString('hex')}`;
+    let encryptedPrivate = privateKey;
+    try {
+      encryptedPrivate = encrypt(privateKey);
+    } catch (e) {
+      if (process.env.NODE_ENV === 'production') {
+        logger.error('DKIM private key encryption failed during regenerate - aborting (production)', { error: e.message });
+        throw new Error('Failed to encrypt DKIM private key');
+      }
+      logger.warn('DKIM private key encryption failed during regenerate - storing raw key (non-production)', { error: e.message });
+    }
     return DomainAuthentication.findByIdAndUpdate(id, {
-      dkim: { selector: 'dkim1', publicKey, privateKey },
+      dkim: { selector, publicKey, privateKey: encryptedPrivate },
       dkimVerified: false,
       status: 'pending'
     }, { new: true });
@@ -366,12 +395,19 @@ class DomainAuthService {
           const txt = await dns.resolveTxt(dkimRecord.name);
           // dns.resolveTxt returns an array of arrays (chunks per TXT record). Join chunks per record.
           const records = txt.map(recChunks => recChunks.join(''));
-          dkimVerified = records.some(str => str.includes(domainAuth.dkim.publicKey.slice(0, 25)));
+          // Extract p= value from DKIM TXT(s)
+          const foundP = records
+            .map(r => {
+              const match = /p=([^;\s]+)/i.exec(r);
+              return match ? match[1].replace(/"/g, '').trim() : null;
+            })
+            .filter(Boolean);
+          dkimVerified = foundP.some(p => p === domainAuth.dkim.publicKey);
           if (!dkimVerified) {
             logger.debug('DKIM verification failed', {
               domain: domainAuth.domain,
-              expectedKey: domainAuth.dkim.publicKey.slice(0, 25),
-              foundRecords: records
+              expectedKeySnippet: domainAuth.dkim.publicKey.slice(0, 32),
+              foundP
             });
           }
         } catch (e) {
@@ -380,15 +416,23 @@ class DomainAuthService {
         }
       }
 
-      // Verify SPF record
+      // Verify SPF record — parse tokens and confirm include:spf.resend.com exists
       try {
-  const spfTxt = await dns.resolveTxt(spfRecord.name);
-  const records = spfTxt.map(recChunks => recChunks.join(''));
-  spfVerified = records.some(str => str.includes('spf.resend.com'));
+        const spfTxt = await dns.resolveTxt(spfRecord.name);
+        const records = spfTxt.map(recChunks => recChunks.join(''));
+        // Flatten and find v=spf1 record(s)
+        const spfRecords = records.filter(r => r.toLowerCase().startsWith('v=spf1'));
+        if (spfRecords.length === 0) {
+          spfVerified = false;
+        } else {
+          // Simple token check for include:spf.resend.com
+          const tokens = spfRecords.join(' ').split(/\s+/);
+          spfVerified = tokens.some(t => t.toLowerCase() === 'include:spf.resend.com' || t.toLowerCase().startsWith('include:spf.resend.com'));
+        }
         if (!spfVerified) {
           logger.debug('SPF verification failed', {
             domain: domainAuth.domain,
-            expectedValue: 'spf.resend.com',
+            expectedValue: 'include:spf.resend.com',
             foundRecords: records
           });
         }
@@ -434,17 +478,23 @@ class DomainAuthService {
       });
     }
 
-    // Determine overall status
+  // Determine overall status
     const allVerified = dkimVerified && spfVerified && trackingVerified;
     const someVerified = dkimVerified || spfVerified || trackingVerified;
     const status = allVerified ? 'verified' : someVerified ? 'partially_verified' : 'pending';
 
-    // Prepare error summary
+    // Prepare per-check error fields and an aggregated error summary
+    const perCheck = {
+      dkimError: dkimError || null,
+      spfError: spfError || null,
+      trackingError: trackingError || null,
+      mxError: mxError || null
+    };
     const errors = [];
-    if (dkimError) errors.push(`DKIM: ${dkimError}`);
-    if (spfError) errors.push(`SPF: ${spfError}`);
-    if (trackingError) errors.push(`Tracking: ${trackingError}`);
-    if (mxError) errors.push(`MX: ${mxError}`);
+    if (perCheck.dkimError) errors.push(`DKIM: ${perCheck.dkimError}`);
+    if (perCheck.spfError) errors.push(`SPF: ${perCheck.spfError}`);
+    if (perCheck.trackingError) errors.push(`Tracking: ${perCheck.trackingError}`);
+    if (perCheck.mxError) errors.push(`MX: ${perCheck.mxError}`);
 
     try {
       let updated = await DomainAuthentication.findByIdAndUpdate(domainAuth._id, {
@@ -453,7 +503,11 @@ class DomainAuthService {
         trackingVerified,
         status,
         lastCheckedAt: new Date(),
-        error: errors.length > 0 ? errors.join('; ') : null
+        error: errors.length > 0 ? errors.join('; ') : null,
+        dkimError: perCheck.dkimError,
+        spfError: perCheck.spfError,
+        trackingError: perCheck.trackingError,
+        mxError: perCheck.mxError
       }, { new: true });
 
       // Set as primary if this is the first verified domain

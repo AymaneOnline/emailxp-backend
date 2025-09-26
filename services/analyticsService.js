@@ -985,6 +985,20 @@ class AnalyticsService {
         totalConversions: 0
       };
 
+      // Also include conversions from the ConversionEvent collection in case
+      // Analytics documents do not have conversions populated.
+      const ConversionEvent = require('../models/ConversionEvent');
+      try {
+        const query = { occurredAt: { $gte: periodStart } };
+        // Accept either ObjectId or string id; let Mongoose cast if needed
+        if (userId) query.user = userId;
+        const conversionsCount = await ConversionEvent.countDocuments(query);
+        data.totalConversions = (data.totalConversions || 0) + conversionsCount;
+      } catch (err) {
+        // If counting conversions fails, log and continue with existing value
+        console.warn('Failed to count ConversionEvent documents:', err && err.message);
+      }
+
       return {
         stages: [
           {
