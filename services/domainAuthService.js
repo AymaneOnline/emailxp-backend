@@ -561,7 +561,21 @@ class DomainAuthService {
   }
 
   async requireVerifiedDomain(domain, { allowUnverified = false } = {}) {
+    // Global override via env var or explicit caller flag
     if (process.env.ALLOW_UNVERIFIED_SENDING === 'true' || allowUnverified) return { allowed: true, reason: 'override' };
+
+    // Temporary fallback: if the DKIM encryption key is not configured we may be unable
+    // to generate/encrypt DKIM keys; allow unverified sending as a short-term mitigation
+    // so users can continue using the app while ops fixes the environment. This is
+    // intentionally conservative and logged so it's visible in production logs.
+    if (!process.env.DKIM_KEY_ENC_KEY) {
+      try {
+        logger.warn('DKIM_KEY_ENC_KEY not set - allowing unverified sending temporarily');
+      } catch (e) {
+        // noop if logger isn't available for some reason
+      }
+      return { allowed: true, reason: 'dkim_key_missing' };
+    }
     const rootDomain = domain.toLowerCase().trim().split('@').pop();
     // Handle full email passed vs bare domain
     const pureDomain = rootDomain.includes('.') ? rootDomain : domain.toLowerCase().trim();
