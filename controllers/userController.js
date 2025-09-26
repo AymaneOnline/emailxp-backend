@@ -233,6 +233,20 @@ const getUserProfile = asyncHandler(async (req, res) => {
       city: user.city,
       country: user.country,
       hasVerifiedDomain: user.hasVerifiedDomain,
+      // Extended account/status fields (read-only display)
+      status: user.status,
+      organization: user.organization, // id reference (client may fetch more details if needed)
+      subscription: user.subscription,
+      limits: user.limits,
+      usage: user.usage,
+      lastLogin: user.lastLogin,
+      twoFactorEnabled: user.twoFactorEnabled,
+      deletionRequestedAt: user.deletionRequestedAt,
+      preferences: user.preferences,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      apiKeyPresent: !!user.apiKey,
+      apiKeyLastUsed: user.apiKeyLastUsed,
     });
   } else {
     res.status(404);
@@ -295,6 +309,19 @@ const updateUserProfile = asyncHandler(async (req, res) => {
       city: updatedUser.city,
       country: updatedUser.country,
       hasVerifiedDomain: updatedUser.hasVerifiedDomain,
+      status: updatedUser.status,
+      organization: updatedUser.organization,
+      subscription: updatedUser.subscription,
+      limits: updatedUser.limits,
+      usage: updatedUser.usage,
+      lastLogin: updatedUser.lastLogin,
+      twoFactorEnabled: updatedUser.twoFactorEnabled,
+      deletionRequestedAt: updatedUser.deletionRequestedAt,
+      preferences: updatedUser.preferences,
+      createdAt: updatedUser.createdAt,
+      updatedAt: updatedUser.updatedAt,
+      apiKeyPresent: !!updatedUser.apiKey,
+      apiKeyLastUsed: updatedUser.apiKeyLastUsed,
       token: generateToken(updatedUser._id),
     });
   } else {
