@@ -13,6 +13,9 @@ const {
   initiateAccountDeletion,
   confirmAccountDeletion,
   cancelAccountDeletion,
+  generateApiKeyController,
+  revokeApiKeyController,
+  updatePreferences,
 } = require('../controllers/userController');
 const rateLimit = require('express-rate-limit');
 
@@ -73,6 +76,13 @@ router.post('/send-verification-email', protect, verificationEmailLimiter, verif
 router.post('/initiate-deletion', protect, initiateAccountDeletion);
 router.post('/confirm-deletion/:token', confirmAccountDeletion);
 router.post('/cancel-deletion', protect, cancelAccountDeletion);
+
+// API key management
+router.post('/api-key', protect, generateApiKeyController);
+router.delete('/api-key', protect, revokeApiKeyController);
+
+// Preferences update
+router.put('/preferences', protect, updatePreferences);
 
 // Delete user (admin or the user themself)
 router.delete('/:id', protect, async (req, res, next) => {
