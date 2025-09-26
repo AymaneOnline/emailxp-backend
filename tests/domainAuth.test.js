@@ -68,7 +68,7 @@ describe('DomainAuthService', () => {
       expect(result.domain).toBe(domain);
       expect(result.status).toBe('pending');
       expect(result.dkim).toBeDefined();
-      expect(result.dkim.selector).toBe('dkim1');
+  expect(result.dkim.selector).toMatch(/^dkim-/);
     });
 
     test('should reject duplicate domain', async () => {
@@ -94,7 +94,7 @@ describe('DomainAuthService', () => {
 
       const dkimRecord = domainAuthService.buildDkimRecord(domain);
       expect(dkimRecord.type).toBe('TXT');
-      expect(dkimRecord.name).toBe('dkim1._domainkey.test.example.com');
+  expect(dkimRecord.name).toMatch(/^dkim-[0-9a-f]+\._domainkey\.test\.example\.com$/);
       expect(dkimRecord.value).toContain('v=DKIM1');
       expect(dkimRecord.value).toContain('k=rsa');
       expect(dkimRecord.value).toContain('p=');

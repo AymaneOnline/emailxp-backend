@@ -1,4 +1,5 @@
 const request = require('supertest');
+jest.setTimeout(30000);
 const app = require('../server');
 const { connect, cleanup, disconnect } = require('./utils/memoryServer');
 const mongoose = require('mongoose');

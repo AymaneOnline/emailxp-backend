@@ -111,11 +111,21 @@ router.get('/:id', protect, asyncHandler(async (req, res) => {
   }
 
   res.json({
-    ...d,
-    dkimRecord: domainAuthService.buildDkimRecord(d),
-    spfRecord: domainAuthService.buildSpfRecord(d.domain),
-    trackingRecord: domainAuthService.buildTrackingCname(d),
-    isPrimary: d.isPrimary
+      ...d,
+      dkimRecord: domainAuthService.buildDkimRecord(d),
+      spfRecord: domainAuthService.buildSpfRecord(d.domain),
+      trackingRecord: domainAuthService.buildTrackingCname(d),
+      isPrimary: d.isPrimary,
+      diagnostics: {
+        dkimVerified: d.dkimVerified,
+        spfVerified: d.spfVerified,
+        trackingVerified: d.trackingVerified,
+        mxVerified: d.mxVerified,
+        dkimError: d.dkimError || null,
+        spfError: d.spfError || null,
+        trackingError: d.trackingError || null,
+        mxError: d.mxError || null
+      }
   });
 }));
 
@@ -172,7 +182,13 @@ router.post('/:id/verify', protect, domainVerificationLimiter, asyncHandler(asyn
     trackingVerified: verified.trackingVerified,
     lastCheckedAt: verified.lastCheckedAt,
     isPrimary: verified.isPrimary,
-    error: verified.error
+    error: verified.error,
+    diagnostics: {
+      dkimError: verified.dkimError || null,
+      spfError: verified.spfError || null,
+      trackingError: verified.trackingError || null,
+      mxError: verified.mxError || null
+    }
   });
 }));
 
