@@ -89,7 +89,8 @@ const registerUser = asyncHandler(async (req, res) => {
         role: 'admin', // First user in organization becomes admin
         organization: organization._id,
         isVerified: false, // Default to false
-        isProfileComplete: true, // Set to true since all required fields are provided during registration
+        // Do not mark profile complete automatically; user must finish profile in settings
+        isProfileComplete: false,
         website: normalizedWebsite || '',
         // verificationToken and verificationTokenExpires are NOT set here initially
       };
