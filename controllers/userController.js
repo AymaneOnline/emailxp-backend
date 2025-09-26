@@ -176,8 +176,13 @@ const loginUser = asyncHandler(async (req, res) => {
     // Check if profile should be marked as complete
     if (user.companyOrOrganization && user.name && user.email && !user.isProfileComplete) {
       user.isProfileComplete = true;
-      await user.save();
     }
+    // Update last login & auto-activate if appropriate
+    user.lastLogin = new Date();
+    if (user.isVerified && user.status === 'pending') {
+      user.status = 'active';
+    }
+    await user.save();
 
     res.json({
       _id: user._id,
@@ -217,6 +222,9 @@ const getUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id).select('-password'); // Exclude password
 
   if (user) {
+    const completionFields = ['companyOrOrganization','name','email','website','industry','bio'];
+    const filled = completionFields.filter(f => !!user[f] && String(user[f]).trim() !== '').length;
+    const profileCompletionPercent = Math.round((filled / completionFields.length) * 100);
     res.json({
       _id: user._id,
       companyOrOrganization: user.companyOrOrganization,
@@ -247,6 +255,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
       updatedAt: user.updatedAt,
       apiKeyPresent: !!user.apiKey,
       apiKeyLastUsed: user.apiKeyLastUsed,
+      profileCompletionPercent,
     });
   } else {
     res.status(404);
@@ -412,6 +421,9 @@ const verifyEmail = asyncHandler(async (req, res) => {
   }
 
   user.isVerified = true;
+  if (user.status === 'pending') {
+    user.status = 'active';
+  }
   user.verificationToken = undefined; // Clear the token
   user.verificationTokenExpires = undefined; // Clear the expiry
   await user.save({ validateBeforeSave: false }); // Save without re-running password hash pre-save hook
