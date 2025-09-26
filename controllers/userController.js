@@ -753,6 +753,65 @@ const cancelAccountDeletion = asyncHandler(async (req, res) => {
   });
 });
 
+// @desc    Generate (or regenerate) an API key (returns plaintext once)
+// @route   POST /api/users/api-key
+// @access  Private
+const generateApiKeyController = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+  const apiKeyPlain = user.generateApiKey(); // hashes & sets apiKey + createdAt
+  user.apiKeyLastUsed = null;
+  await user.save();
+  res.status(201).json({ apiKey: apiKeyPlain, createdAt: user.apiKeyCreatedAt });
+});
+
+// @desc    Revoke API key
+// @route   DELETE /api/users/api-key
+// @access  Private
+const revokeApiKeyController = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+  user.apiKey = undefined;
+  user.apiKeyCreatedAt = undefined;
+  user.apiKeyLastUsed = undefined;
+  await user.save();
+  res.json({ message: 'API key revoked' });
+});
+
+// @desc    Update user preferences (timezone, dateFormat, layout, notifications)
+// @route   PUT /api/users/preferences
+// @access  Private
+const updatePreferences = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+  const { timezone, dateFormat, dashboardLayout, emailNotifications } = req.body || {};
+  if (timezone) user.preferences.timezone = timezone;
+  if (dateFormat) user.preferences.dateFormat = dateFormat;
+  if (dashboardLayout) user.preferences.dashboardLayout = dashboardLayout;
+  if (emailNotifications && typeof emailNotifications === 'object') {
+    const allowed = ['campaignUpdates','systemAlerts','weeklyReports','marketingEmails'];
+    allowed.forEach(k => {
+      if (k in emailNotifications) {
+        user.preferences.emailNotifications[k] = !!emailNotifications[k];
+      }
+    });
+  }
+  await user.save();
+  res.json({
+    preferences: user.preferences,
+    message: 'Preferences updated'
+  });
+});
+
 
 module.exports = {
   registerUser,
@@ -766,4 +825,7 @@ module.exports = {
   initiateAccountDeletion,
   confirmAccountDeletion,
   cancelAccountDeletion,
+  generateApiKeyController,
+  revokeApiKeyController,
+  updatePreferences,
 };
