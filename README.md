@@ -79,6 +79,21 @@ cp .env.example .env  # create file then edit values
 npm start
 ```
 
+## Running tests
+
+Unit and integration tests use Jest and an in-memory MongoDB. To run the
+backend tests locally:
+
+```bash
+cd backend
+npm ci
+NODE_ENV=test npm test
+```
+
+The repository also includes a GitHub Actions workflow (`.github/workflows/ci-backend.yml`)
+that runs the same tests on push and pull requests for the `backend/` paths.
+
+
 ## Minimal .env Example
 ```
 RESEND_API_KEY=your_resend_key_here

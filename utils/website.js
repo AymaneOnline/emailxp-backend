@@ -10,15 +10,29 @@ function normalizeWebsite(raw) {
   if (value.length > MAX_LENGTH) {
     throw new Error('Website URL is too long (max 2048 characters)');
   }
-  // Prepend scheme if missing
-  if (!/^https?:\/\//i.test(value)) {
-    value = 'https://' + value;
+  // Attempt to parse as-is, and if it fails, try prepending https://
+  // If a scheme is present but malformed (e.g. 'ht!tp://') treat as invalid.
+  if (value.includes('://')) {
+    const scheme = value.split('://')[0];
+    if (!/^[a-zA-Z]+$/.test(scheme)) {
+      throw new Error('Invalid website URL');
+    }
+    if (!/^https?:\/\//i.test(value) && /^[a-zA-Z]+$/.test(scheme)) {
+      // Scheme is alphabetic but not http/https
+      throw new Error('Website URL must use http or https');
+    }
   }
+
   let url;
   try {
     url = new URL(value);
   } catch (e) {
-    throw new Error('Invalid website URL');
+    // Try with https:// prefix if the user omitted a scheme
+    try {
+      url = new URL('https://' + value);
+    } catch (err) {
+      throw new Error('Invalid website URL');
+    }
   }
   if (!/^https?:$/i.test(url.protocol)) {
     throw new Error('Website URL must use http or https');
