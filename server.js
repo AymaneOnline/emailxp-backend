@@ -22,7 +22,6 @@ const fileRoutes = require('./routes/fileRoutes'); // NEW: Import file routes
 const segmentRoutes = require('./routes/segments');
 const templateRoutes = require('./routes/templates'); // Unified templates routes (auth protected)
 const unlayerTemplateRoutes = require('./routes/unlayerTemplates'); // Unlayer API templates
-const formRoutes = require('./routes/formRoutes'); // Forms routes
 const { startCampaignScheduler } = require('./utils/campaignScheduler');
 const { campaignAutomationEngine } = require('./services/campaignAutomation');
 const { startBehavioralTriggerScheduler } = require('./utils/behavioralTriggerScheduler');
@@ -103,7 +102,6 @@ app.use('/api/audience', require('./routes/audienceRoutes'));
 app.use('/api/ab-tests', require('./routes/abTestRoutes'));
 app.use('/api/templates', templateRoutes);
 app.use('/api/unlayer-templates', unlayerTemplateRoutes);
-app.use('/api/forms', formRoutes); // Forms routes
 app.use('/api/template-sharing', require('./routes/templateSharing'));
 app.use('/api/campaign-schedules', require('./routes/campaignSchedules'));
 app.use('/api/analytics', require('./routes/analytics'));
