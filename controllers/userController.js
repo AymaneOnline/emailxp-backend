@@ -184,6 +184,15 @@ const loginUser = asyncHandler(async (req, res) => {
     }
     await user.save();
 
+    // Audit log: successful login
+    try {
+      const ip = req.ip || (req.headers && (req.headers['x-forwarded-for'] || req.connection?.remoteAddress)) || 'unknown';
+      const ua = req.headers && req.headers['user-agent'] ? req.headers['user-agent'] : 'unknown';
+      console.log(`[AUTH] Successful login: user=${user._id} email=${user.email} ip=${ip} ua="${String(ua).slice(0,200)}" time=${new Date().toISOString()}`);
+    } catch (e) {
+      // ignore logging failures
+    }
+
     res.json({
       _id: user._id,
       companyOrOrganization: user.companyOrOrganization,
