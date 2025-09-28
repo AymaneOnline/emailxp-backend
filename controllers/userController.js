@@ -218,6 +218,14 @@ const loginUser = asyncHandler(async (req, res) => {
       token: generateToken(user._id),
     });
   } else {
+    // Log failed login attempts for audit (do not log passwords)
+    try {
+      const ip = req.ip || (req.headers && (req.headers['x-forwarded-for'] || req.connection?.remoteAddress)) || 'unknown';
+      const ua = req.headers && req.headers['user-agent'] ? req.headers['user-agent'] : 'unknown';
+      console.warn(`[AUTH] Failed login attempt: email=${rawEmail} found=${!!user} ip=${ip} ua="${String(ua).slice(0,200)}" time=${new Date().toISOString()} requestId=${req.requestId || 'n/a'}`);
+    } catch (e) {
+      // ignore logging failures
+    }
     // Explicit JSON response for invalid credentials to avoid HTML/redirects
     return res.status(401).json({ message: 'Invalid credentials' });
   }
