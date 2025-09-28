@@ -380,12 +380,14 @@ class CampaignAutomationEngine {
 
   // Event handlers for trigger campaigns
   async handleSubscriberAdded(subscriber) {
+    console.log('[Automation] handleSubscriberAdded invoked for subscriber:', subscriber && (subscriber._id || subscriber.id || subscriber.email));
     const triggerSchedules = await CampaignSchedule.find({
       scheduleType: 'trigger',
       'triggers.event': 'subscriber_added',
       status: 'running',
       isActive: true
     });
+    console.log('[Automation] found triggerSchedules:', Array.isArray(triggerSchedules) ? triggerSchedules.length : 0);
 
     for (const schedule of triggerSchedules) {
       // Check if subscriber meets trigger conditions
@@ -394,10 +396,21 @@ class CampaignAutomationEngine {
         this.evaluateConditions(subscriber, trigger.conditions || [])
       );
 
+      if (applicableTriggers.length > 0) {
+        console.log('[Automation] schedule matches subscriber_added:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, matchedTriggers: applicableTriggers.length });
+      } else {
+        console.log('[Automation] schedule did NOT match conditions:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id });
+      }
+
       for (const trigger of applicableTriggers) {
         // Schedule execution with delay
         setTimeout(async () => {
-          await this.executeCampaignSchedule(schedule);
+          try {
+            console.log('[Automation] executing trigger schedule:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, triggerId: trigger.id || trigger._id });
+            await this.executeCampaignSchedule(schedule);
+          } catch (err) {
+            console.error('[Automation] failed executing trigger schedule:', err && err.message ? err.message : err);
+          }
         }, this.convertDelayToMilliseconds(trigger.delay, trigger.delayUnit));
       }
     }
