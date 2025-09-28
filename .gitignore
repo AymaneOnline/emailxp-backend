@@ -23,4 +23,4 @@ Thumbs.db
 # Other temporary files
 *.tgz
 .npm/
-.yarn/
+.yarn/.env
