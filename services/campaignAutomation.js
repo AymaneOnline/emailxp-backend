@@ -245,10 +245,21 @@ class CampaignAutomationEngine {
   }
 
   async getRecipients(campaign) {
-    let query = { isActive: true };
+    // Default to subscribers that are not deleted and not unsubscribed.
+    // Previous default used { isActive: true } which doesn't exist on Subscriber
+    // documents and therefore returned zero recipients. Use a safer default
+    // that matches the Subscriber schema.
+    const query = { isDeleted: false, status: { $ne: 'unsubscribed' } };
+
+    // If the campaign has an owning user, scope recipients to that user
+    if (campaign && campaign.user) {
+      query.user = campaign.user;
+    }
+
+    console.log('[Automation] getRecipients base query:', query);
 
     // Apply targeting criteria
-    if (campaign.targeting) {
+    if (campaign && campaign.targeting) {
       if (campaign.targeting.groups && campaign.targeting.groups.length > 0) {
         query.groups = { $in: campaign.targeting.groups };
       }
@@ -263,7 +274,9 @@ class CampaignAutomationEngine {
       }
     }
 
-    return await Subscriber.find(query);
+    const recipients = await Subscriber.find(query);
+    console.log('[Automation] getRecipients found recipients:', (recipients || []).length, 'for campaign:', campaign && (campaign._id || campaign.id));
+    return recipients;
   }
 
   async getDripStepRecipients(allRecipients, step, schedule) {
