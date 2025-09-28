@@ -140,7 +140,8 @@ router.delete('/:id', protect, asyncHandler(async (req, res) => {
     throw new Error('Not authorized');
   }
   
-  await automation.remove();
+  // Use model-level delete to avoid relying on document.remove (may be unavailable in some Mongoose versions)
+  await Automation.findByIdAndDelete(req.params.id);
   
   res.json({ success: true, message: 'Automation removed' });
 }));

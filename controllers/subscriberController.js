@@ -5,6 +5,8 @@ const OpenEvent = require('../models/OpenEvent');
 const ClickEvent = require('../models/ClickEvent');
 const Subscriber = require('../models/Subscriber');
 const Group = require('../models/Group');
+const logger = require('../utils/logger');
+const { campaignAutomationEngine } = require('../services/campaignAutomation');
 // tag cleanup removed
 
 // @desc    Get subscriber activity history (unified opens, clicks, status entries) with pagination
@@ -461,7 +463,29 @@ const createSubscriber = asyncHandler(async (req, res) => {
         }
     }
 
-    res.status(201).json(populatedSubscriber);
+        // Fire subscriber_added automations safely and non-blocking.
+        try {
+            const enabled = String(process.env.ENABLE_AUTOMATION_ON_SUBSCRIBE || '0') === '1';
+            const isSubscribed = (populatedSubscriber.status === 'subscribed');
+            const isImport = (populatedSubscriber.source === 'import');
+
+            if (enabled && isSubscribed && !isImport && campaignAutomationEngine && typeof campaignAutomationEngine.handleSubscriberAdded === 'function') {
+                // Use setImmediate to avoid blocking the response and protect from sync errors
+                setImmediate(() => {
+                    try {
+                        campaignAutomationEngine.handleSubscriberAdded(populatedSubscriber);
+                        logger.info('[SubscriberController] triggered subscriber_added automations', { user: populatedSubscriber.user, subscriberId: populatedSubscriber._id });
+                    } catch (err) {
+                        logger.warn('[SubscriberController] failed to trigger subscriber_added automations', { error: err?.message || err });
+                    }
+                });
+            }
+        } catch (err) {
+            // Do not block subscriber creation on automation errors
+            logger.warn('[SubscriberController] automation trigger check failed', { error: err?.message || err });
+        }
+
+        res.status(201).json(populatedSubscriber);
 });
 
 // @desc Confirm subscriber via token
