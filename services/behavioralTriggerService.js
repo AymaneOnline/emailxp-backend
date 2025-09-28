@@ -6,6 +6,7 @@ const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
 const { addEmailJob } = require('./queueService');
 const logger = require('../utils/logger');
+const { executeAutomation } = require('./automationExecutor');
 
 /**
  * Process a behavioral event and check if any triggers should fire
@@ -37,15 +38,28 @@ const processBehavioralEvent = async (eventData) => {
             // Check subscriber conditions
             const subscriber = await Subscriber.findById(eventData.subscriber);
             if (subscriber && trigger.checkConditions(subscriber)) {
-              // Trigger the campaign
-              const campaign = await triggerCampaign(trigger, subscriber, event);
-              if (campaign) {
-                triggeredCampaigns.push(campaign);
-                
-                // Update trigger stats
-                trigger.stats.timesFired += 1;
-                trigger.lastFired = new Date();
-                await trigger.save();
+              // If this trigger has an automation configured, execute it
+              if (trigger.automation) {
+                try {
+                  await executeAutomation(trigger.automation, { userId: trigger.user, subscriberId: subscriber._id, event });
+                  triggeredCampaigns.push({ automation: trigger.automation });
+                  trigger.stats.timesFired += 1;
+                  trigger.lastFired = new Date();
+                  await trigger.save();
+                } catch (err) {
+                  logger.error('Error executing automation for trigger:', err);
+                }
+              } else {
+                // Trigger the campaign
+                const campaign = await triggerCampaign(trigger, subscriber, event);
+                if (campaign) {
+                  triggeredCampaigns.push(campaign);
+                  
+                  // Update trigger stats
+                  trigger.stats.timesFired += 1;
+                  trigger.lastFired = new Date();
+                  await trigger.save();
+                }
               }
             }
           }

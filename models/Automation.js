@@ -107,6 +107,15 @@ const automationSchema = mongoose.Schema(
         default: true,
       },
     },
+    // Versioning / audit trail
+    versions: [
+      {
+        version: { type: Number, required: true },
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        changes: { type: mongoose.Schema.Types.Mixed },
+        createdAt: { type: Date, default: Date.now }
+      }
+    ],
   },
   {
     timestamps: true,

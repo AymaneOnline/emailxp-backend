@@ -43,6 +43,9 @@
     "resend": "^3.5.0",
     "uuid": "^13.0.0"
   },
+  "optionalDependencies": {
+    "puppeteer": "^21.0.0"
+  },
   "engines": {
     "node": "20.x"
   },

@@ -24,7 +24,12 @@ const behavioralTriggerSchema = new mongoose.Schema({
   campaignTemplate: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Campaign',
-    required: true
+    required: function() { return !this.automation; }
+  },
+  // Optional automation to execute instead of creating a campaign
+  automation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Automation'
   },
   // Event that triggers this behavior
   triggerEvent: {

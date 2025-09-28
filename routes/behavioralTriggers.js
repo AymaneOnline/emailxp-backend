@@ -30,6 +30,7 @@ router.get('/', protect, rbac('automation', 'read'), async (req, res) => {
 
     const triggers = await BehavioralTrigger.find(query)
       .populate('campaignTemplate', 'name subject')
+      .populate('automation', 'name')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
@@ -76,7 +77,8 @@ router.get('/stats', protect, rbac('automation', 'read'), async (req, res) => {
 router.get('/:id', protect, rbac('automation', 'read'), async (req, res) => {
   try {
     const trigger = await BehavioralTrigger.findById(req.params.id)
-      .populate('campaignTemplate', 'name subject htmlContent plainTextContent');
+      .populate('campaignTemplate', 'name subject htmlContent plainTextContent')
+      .populate('automation', 'name nodes edges');
 
     if (!trigger) {
       return res.status(404).json({ message: 'Behavioral trigger not found' });
@@ -109,10 +111,14 @@ router.post('/', protect, rbac('automation', 'create'), async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!name || !campaignTemplate || !triggerEvent) {
+    if (!name || !triggerEvent) {
       return res.status(400).json({ 
-        message: 'Name, campaign template, and trigger event are required' 
+        message: 'Name and trigger event are required' 
       });
+    }
+
+    if (!campaignTemplate && !automation) {
+      return res.status(400).json({ message: 'Either campaignTemplate or automation must be provided' });
     }
 
     // Validate trigger event
@@ -127,6 +133,7 @@ router.post('/', protect, rbac('automation', 'create'), async (req, res) => {
       name,
       description,
       campaignTemplate,
+      automation,
       triggerEvent,
       conditions: conditions || [],
       timing: timing || {},
@@ -172,9 +179,10 @@ router.put('/:id', protect, rbac('automation', 'update'), async (req, res) => {
     }
 
     // Update fields
-    if (name) trigger.name = name;
-    if (description) trigger.description = description;
-    if (campaignTemplate) trigger.campaignTemplate = campaignTemplate;
+  if (name) trigger.name = name;
+  if (description) trigger.description = description;
+  if (campaignTemplate) trigger.campaignTemplate = campaignTemplate;
+  if (automation) trigger.automation = automation;
     if (triggerEvent) trigger.triggerEvent = triggerEvent;
     if (conditions) trigger.conditions = conditions;
     if (timing) trigger.timing = timing;

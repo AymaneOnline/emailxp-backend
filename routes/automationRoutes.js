@@ -4,9 +4,11 @@ const express = require('express');
 const router = express.Router();
 const asyncHandler = require('express-async-handler');
 const { protect, admin } = require('../middleware/authMiddleware');
+const logger = require('../utils/logger');
 
 // Import models
 const Automation = require('../models/Automation');
+const { executeAutomation } = require('../services/automationExecutor');
 
 // @desc    Get all automations
 // @route   GET /api/automations
@@ -69,6 +71,14 @@ router.post('/', protect, asyncHandler(async (req, res) => {
     edges,
     isActive: isActive || false
   });
+  // Add initial version entry
+  automation.versions = [
+    {
+      version: 1,
+      user: req.user.id,
+      changes: { name, description, nodes, edges, isActive: isActive || false }
+    }
+  ];
   
   const createdAutomation = await automation.save();
   
@@ -99,7 +109,15 @@ router.put('/:id', protect, asyncHandler(async (req, res) => {
   automation.nodes = nodes || automation.nodes;
   automation.edges = edges || automation.edges;
   automation.isActive = isActive !== undefined ? isActive : automation.isActive;
-  
+  // Append version entry
+  const nextVersion = (automation.versions?.length || 0) + 1;
+  automation.versions = automation.versions || [];
+  automation.versions.push({
+    version: nextVersion,
+    user: req.user.id,
+    changes: { name: automation.name, description: automation.description, nodes: automation.nodes, edges: automation.edges, isActive: automation.isActive }
+  });
+
   const updatedAutomation = await automation.save();
   
   res.json({ success: true, automation: updatedAutomation });
@@ -202,10 +220,44 @@ router.post('/:id/duplicate', protect, asyncHandler(async (req, res) => {
     isActive: false,
     status: 'draft'
   });
+  // initial version for duplicated automation
+  duplicatedAutomation.versions = [
+    {
+      version: 1,
+      user: req.user.id,
+      changes: { name: duplicatedAutomation.name, description: duplicatedAutomation.description, nodes: duplicatedAutomation.nodes, edges: duplicatedAutomation.edges, isActive: duplicatedAutomation.isActive }
+    }
+  ];
   
   const createdAutomation = await duplicatedAutomation.save();
   
   res.status(201).json({ success: true, automation: createdAutomation });
+}));
+
+// @desc    Trigger automation (for testing or runtime triggers)
+// @route   POST /api/automations/:id/trigger
+// @access  Private
+router.post('/:id/trigger', protect, asyncHandler(async (req, res) => {
+  const { subscriberId, event } = req.body;
+
+  const automation = await Automation.findById(req.params.id);
+  if (!automation) {
+    res.status(404);
+    throw new Error('Automation not found');
+  }
+
+  // Check ownership
+  if (automation.user.toString() !== req.user.id) {
+    res.status(401);
+    throw new Error('Not authorized');
+  }
+
+  // Execute automation actions in background (don't await long-running jobs)
+  executeAutomation(automation, { userId: req.user.id, subscriberId, event })
+    .then(() => logger.log('[AutomationRoutes] automation executed'))
+    .catch(err => logger.error('[AutomationRoutes] automation execution failed', err));
+
+  res.json({ success: true, message: 'Automation triggered' });
 }));
 
 module.exports = router;

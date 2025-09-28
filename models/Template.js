@@ -16,6 +16,13 @@ const templateSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, 'Template name cannot exceed 100 characters']
   },
+  // Email subject line for this template
+  subject: {
+    type: String,
+    trim: true,
+    maxlength: [200, 'Subject cannot exceed 200 characters'],
+    default: ''
+  },
   description: {
     type: String,
     trim: true,
@@ -373,11 +380,21 @@ templateSchema.methods.hasFooterAndUnsubscribe = function() {
   try {
     const blocks = (this.structure && this.structure.blocks) || [];
     const footer = blocks.find(b => b && b.type === 'footer');
-    if (!footer) return false;
-    const contentText = (footer.content?.text || '').toString();
-    const hasToken = /\{\{\s*unsubscribeUrl\s*\}\}/i.test(contentText);
-    const mentionsUnsub = contentText.toLowerCase().includes('unsubscribe');
-    return hasToken && mentionsUnsub;
+    if (footer) {
+      const contentText = (footer.content?.text || '').toString();
+      const hasToken = /\{\{\s*unsubscribeUrl\s*\}\}/i.test(contentText);
+      const mentionsUnsub = contentText.toLowerCase().includes('unsubscribe');
+      if (hasToken && mentionsUnsub) return true;
+    }
+
+    // Fallback: check raw htmlContent for unsubscribe token/link
+    if (this.htmlContent && typeof this.htmlContent === 'string') {
+      const htmlHasToken = /\{\{\s*unsubscribeUrl\s*\}\}/i.test(this.htmlContent);
+      const htmlMentionsUnsub = this.htmlContent.toLowerCase().includes('unsubscribe');
+      return htmlHasToken && htmlMentionsUnsub;
+    }
+
+    return false;
   } catch (e) {
     return false;
   }
