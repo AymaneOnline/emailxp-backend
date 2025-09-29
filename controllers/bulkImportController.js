@@ -234,6 +234,7 @@ const bulkImportSubscribers = asyncHandler(async (req, res) => {
 // CSV upload handler
 const importCsvSubscribers = asyncHandler(async (req, res) => {
     try {
+        console.log('[importCsvSubscribers] invoked by user:', req.user && req.user.id ? req.user.id : 'unknown');
         let parse;
         try {
             ({ parse } = require('csv-parse/sync'));
@@ -241,9 +242,14 @@ const importCsvSubscribers = asyncHandler(async (req, res) => {
             console.error('csv-parse not installed:', err.message);
             return res.status(500).json({ message: 'CSV parser not available. Please run `npm install csv-parse` in the backend.' });
         }
-        if (!req.file || !req.file.buffer) return res.status(400).json({ message: 'CSV file is required' });
+        if (!req.file || !req.file.buffer) {
+            console.warn('[importCsvSubscribers] missing req.file or buffer');
+            return res.status(400).json({ message: 'CSV file is required' });
+        }
+        console.log('[importCsvSubscribers] received file:', { originalname: req.file.originalname, mimetype: req.file.mimetype, size: req.file.size });
         const csv = req.file.buffer.toString('utf8');
         const records = parse(csv, { columns: true, skip_empty_lines: true });
+        console.log(`[importCsvSubscribers] parsed ${records.length} CSV records`);
         // Normalize column names (handle headers like "First Name", "first_name", etc.)
         const subscribers = records.map(raw => {
             // Build a normalized record keyed by header normalized form
@@ -265,6 +271,7 @@ const importCsvSubscribers = asyncHandler(async (req, res) => {
         });
 
         const results = await processImportRows({ rows: subscribers, userId: req.user.id, overwriteExisting: req.body.overwriteExisting || false, groupIds: req.body.groupIds || [], tagNames: req.body.tagNames || [] });
+        console.log('[importCsvSubscribers] import results:', results);
         res.status(200).json(results);
     } catch (error) {
         console.error('CSV import error:', error);
