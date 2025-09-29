@@ -329,6 +329,30 @@ class AnalyticsService {
         periodStart: { $gte: periodStart }
       });
 
+      // If Analytics collection doesn't yet have full coverage, fall back
+      // to summing per-campaign recorded sends so the dashboard still shows
+      // a sensible "emails sent" number. This avoids showing 0 when
+      // analytics documents are missing or delayed.
+      let campaignSentFallback = 0;
+      let campaignDeliveredFallback = 0;
+      try {
+        const campaignAgg = await Campaign.aggregate([
+          { $match: { user: new mongoose.Types.ObjectId(userId), createdAt: { $gte: periodStart } } },
+          { $group: {
+            _id: null,
+            campaignSentSum: { $sum: '$emailsSuccessfullySent' },
+            campaignDeliveredSum: { $sum: '$stats.delivered' }
+          } }
+        ]);
+        if (Array.isArray(campaignAgg) && campaignAgg[0]) {
+          campaignSentFallback = campaignAgg[0].campaignSentSum || 0;
+          campaignDeliveredFallback = campaignAgg[0].campaignDeliveredSum || 0;
+        }
+      } catch (e) {
+        // Non-fatal - keep analytics aggregation result
+        console.warn('Failed to compute campaign fallback totals for dashboard overview:', e.message || e);
+      }
+
       // Get campaign performance
       const topCampaigns = await Analytics.getTopPerformers(userId, 'openRate', 5);
       
@@ -343,8 +367,10 @@ class AnalyticsService {
 
       return {
         overview: {
-          totalSent: aggregated.totalSent || 0,
-          totalDelivered: aggregated.totalDelivered || 0,
+          // Prefer analytics aggregation, but fall back to campaign sums when
+          // analytics are not available or appear to be empty.
+          totalSent: (aggregated.totalSent && aggregated.totalSent > 0) ? aggregated.totalSent : campaignSentFallback || 0,
+          totalDelivered: (aggregated.totalDelivered && aggregated.totalDelivered > 0) ? aggregated.totalDelivered : campaignDeliveredFallback || 0,
           avgOpenRate: aggregated.avgOpenRate || 0,
           avgClickRate: aggregated.avgClickRate || 0,
           avgUnsubscribeRate: aggregated.avgUnsubscribeRate || 0
