@@ -35,7 +35,7 @@ const DomainAuthentication = require('../models/DomainAuthentication');
 const { buildFromAddress } = require('./fromAddress');
 
 // BACKEND_URL for unsubscribe links
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
+const BACKEND_URL = process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
 
 
 /**

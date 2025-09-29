@@ -27,7 +27,7 @@ console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_
  * @returns {string} HTML with unsubscribe footer added
  */
 const addUnsubscribeFooter = (html, subscriberId, campaignId) => {
-    const baseUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const baseUrl = (process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
     const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${encodeURIComponent(subscriberId)}${campaignId ? `/${encodeURIComponent(campaignId)}` : ''}`;
     // If the template already contains an unsubscribe link or footer text, don't add another.
     // Check for common markers: the {{unsubscribeUrl}} placeholder, explicit '/unsubscribe' links,
@@ -119,7 +119,7 @@ const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId
     // We try to preserve authored anchor tags and avoid nested anchors.
     let finalHtml = html || '';
     if (subscriberId) {
-    const baseUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const baseUrl = (process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
     const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${encodeURIComponent(subscriberId)}${campaignId ? `/${encodeURIComponent(campaignId)}` : ''}`;
 
         try {

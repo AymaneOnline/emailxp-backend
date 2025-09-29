@@ -161,7 +161,7 @@ class EmailService {
 
       // Use explicit BACKEND_URL when provided (production). Always encode messageId
       // so characters such as @ do not break URL parsing in some mail clients.
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const backendUrl = process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
       try { console.log('Generating tracking pixel with backendUrl:', backendUrl); } catch (e) { /* ignore */ }
       const trackingPixel = `<img src="${backendUrl.replace(/\/$/, '')}/api/track/open/${encodeURIComponent(messageId)}" width="1" height="1" style="display:none;" alt="" />`;
     
@@ -201,7 +201,7 @@ class EmailService {
 
         // Build click tracking URL. Use BACKEND_URL when set, and ensure messageId
         // and target url are properly encoded.
-        const backend = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const backend = (process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
         const trackingUrl = `${backend}/api/track/click/${encodeURIComponent(messageId)}?url=${encodeURIComponent(url)}`;
       console.log('Converting URL:', url, 'to tracking URL:', trackingUrl);
       

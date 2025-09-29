@@ -57,7 +57,7 @@ const allowedOrigins = [
     sanitizeOrigin('http://localhost:3000'), // Local development
     sanitizeOrigin('https://emailxp-frontend-production.up.railway.app'), // Production frontend
     sanitizeOrigin(process.env.FRONTEND_URL), // Configured frontend URL
-    sanitizeOrigin(process.env.BACKEND_URL),  // Allow if backend calls itself or proxies set this
+    sanitizeOrigin(process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL),  // Allow if backend calls itself or proxies set this
     ...allowedFromEnv
 ].filter(Boolean);
 
@@ -70,7 +70,7 @@ app.use(cors({
         const reqOrigin = sanitizeOrigin(origin);
 
         // Allow same-origin requests where origin matches our backend URL
-        const serverUrl = (process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? undefined : `http://localhost:${process.env.PORT || 5000}`));
+    const serverUrl = (process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || (process.env.NODE_ENV === 'production' ? undefined : `http://localhost:${process.env.PORT || 5000}`));
         const serverUrlSanitized = sanitizeOrigin(serverUrl);
         if (serverUrlSanitized && reqOrigin === serverUrlSanitized) return callback(null, true);
 
