@@ -422,14 +422,30 @@ const createSubscriber = asyncHandler(async (req, res) => {
         const ttlHours = parseInt(process.env.DOUBLE_OPT_IN_TOKEN_TTL_HOURS || '48', 10);
         confirmationExpiresAt = new Date(Date.now() + ttlHours * 3600 * 1000);
     }
+    // Normalize customFields: frontend uses an array of {name, value}
+    let normalizedCustomFields = {};
+    if (Array.isArray(customFields)) {
+        for (const cf of customFields) {
+            if (!cf || !cf.name) continue;
+            // Coerce to string values to satisfy Map of String
+            normalizedCustomFields[String(cf.name)] = cf.value !== undefined && cf.value !== null ? String(cf.value) : '';
+        }
+    } else if (customFields && typeof customFields === 'object') {
+        // If it's already an object/map-like, copy as strings
+        Object.keys(customFields).forEach(k => {
+            const v = customFields[k];
+            normalizedCustomFields[String(k)] = v !== undefined && v !== null ? String(v) : '';
+        });
+    }
+
     const subscriber = await Subscriber.create({
         user: req.user.id,
         groups: finalGroupIds,
         email: email.toLowerCase(),
         name: `${firstName || ''} ${lastName || ''}`.trim(),
         status: initialStatus,
-    // tags removed
-        customFields: customFields || {},
+        // tags removed
+        customFields: normalizedCustomFields,
         source: 'manual',
         confirmationToken,
         confirmationSentAt: doubleOptIn ? new Date() : undefined,
@@ -673,7 +689,26 @@ const updateSubscriber = asyncHandler(async (req, res) => {
     if (firstName !== undefined) subscriber.name = firstName;
     if (lastName !== undefined) subscriber.name = subscriber.name ? `${subscriber.name} ${lastName}` : lastName;
     // tags removed
-    if (customFields !== undefined) subscriber.customFields = customFields;
+    if (customFields !== undefined) {
+        // Normalize customFields on update as well
+        if (Array.isArray(customFields)) {
+            const next = {};
+            for (const cf of customFields) {
+                if (!cf || !cf.name) continue;
+                next[String(cf.name)] = cf.value !== undefined && cf.value !== null ? String(cf.value) : '';
+            }
+            subscriber.customFields = next;
+        } else if (customFields && typeof customFields === 'object') {
+            const next = {};
+            Object.keys(customFields).forEach(k => {
+                const v = customFields[k];
+                next[String(k)] = v !== undefined && v !== null ? String(v) : '';
+            });
+            subscriber.customFields = next;
+        } else {
+            subscriber.customFields = {};
+        }
+    }
 
     // Handle status changes
     if (status !== undefined && status !== subscriber.status) {
