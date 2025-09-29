@@ -280,12 +280,17 @@ router.delete('/:id', async (req, res) => {
     }
     
     template.isActive = false;
-  // Save without running validators or pre-validate hooks which may enforce
-  // presence of footer/html content. We only need to mark the record as
-  // inactive for soft-delete semantics.
-  await template.save({ validateBeforeSave: false });
-    
-    res.json({ message: 'Template deleted successfully' });
+    // Save without running validators or pre-validate hooks which may enforce
+    // presence of footer/html content. We only need to mark the record as
+    // inactive for soft-delete semantics.
+    await template.save({ validateBeforeSave: false });
+
+    // Log deletion for observability (helps debugging when UI reports success
+    // but DB shows the record still active)
+    console.info('[TemplatesRoute] template deleted', { templateId: template._id ? template._id.toString() : null, userId: req.user.id });
+
+    // Return the deactivated template so clients can verify the backend change
+    res.json({ message: 'Template deleted successfully', template: { _id: template._id, isActive: template.isActive } });
   } catch (error) {
     console.error('Error deleting template:', error);
     res.status(500).json({ message: 'Server error' });
