@@ -77,6 +77,12 @@ class EmailService {
         messageId
       };
 
+      // Ensure transporter is initialized (create test account on demand in dev)
+      if (!this.transporter) {
+        console.log('[EmailService] transporter not ready, creating test account...');
+        await this.createTestAccount();
+      }
+
       // Send email
       const result = await this.transporter.sendMail(mailOptions);
 
@@ -205,7 +211,22 @@ class EmailService {
   async createTrackingRecord(trackingData) {
     try {
       console.log('Creating EmailTracking record for campaign:', trackingData.campaign, 'messageId:', trackingData.messageId);
-      const tracking = new EmailTracking(trackingData);
+      // Only pick known fields to avoid accidental extra data
+      const payload = {
+        campaign: trackingData.campaign || null,
+        automation: trackingData.automation || null,
+        subscriber: trackingData.subscriber,
+        organization: trackingData.organization || null,
+        emailAddress: trackingData.emailAddress,
+        subject: trackingData.subject,
+        messageId: trackingData.messageId,
+        status: trackingData.status || 'sent',
+        from: trackingData.from || null,
+        fromName: trackingData.fromName || null,
+        template: trackingData.template || null,
+        actionId: trackingData.actionId || null
+      };
+      const tracking = new EmailTracking(payload);
       await tracking.save();
       console.log('EmailTracking record created successfully with ID:', tracking._id);
       return tracking;

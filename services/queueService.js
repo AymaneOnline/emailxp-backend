@@ -1,7 +1,7 @@
 // emailxp/backend/services/queueService.js
 
 const Queue = require('bull');
-const { sendEmail } = require('./emailService');
+const resendUtil = require('../utils/resendEmailService');
 const logger = require('../utils/logger');
 
 // Basic redis connection configuration (avoid advanced options that Bull forbids on bclient/subscriber)
@@ -45,25 +45,35 @@ emailQueue.process('send-email', 10, async (job) => {
     subscriberId, 
     groupId, 
     fromEmail, 
+    automationId,
+    templateId,
+    actionId,
+    templateDisableAutoFooter,
     fromName 
   } = job.data;
 
   logger.log(`[QueueService] Processing email job`, { toEmail, campaignId });
+  try { console.log(`[QueueService] Processing email job`, { toEmail, campaignId, jobId: job.id }); } catch (e) { /* ignore */ }
 
   try {
-    const result = await sendEmail({
+    const result = await resendUtil.sendEmail({
       to: toEmail,
       subject,
       html: htmlContent,
       text: plainTextContent,
-      campaignId,
+        campaignId,
       subscriberId,
+        automationId,
+        templateId,
+        templateDisableAutoFooter,
+        actionId,
       from: fromEmail,
       fromName
     });
 
     if (result && result.success) {
   logger.log(`[QueueService] Email sent successfully`, { toEmail });
+  try { console.log(`[QueueService] Email sent successfully`, { toEmail, messageId: result.messageId }); } catch (e) { /* ignore */ }
       return { success: true, result };
     } else {
       throw new Error(result?.message || 'Email sending failed');
@@ -97,6 +107,10 @@ emailQueue.process('send-campaign-batch', 5, async (job) => {
         groupId: job.data.groupId,
   fromEmail: process.env.EMAIL_FROM || 'onboarding@resend.dev', // Use configured EMAIL_FROM if available
         fromName: 'EmailXP',
+        // propagate template/action when campaign batch originates from an automation or template
+        templateId: job.data.templateId || null,
+        templateDisableAutoFooter: job.data.templateDisableAutoFooter || false,
+        actionId: job.data.actionId || null,
       }, {
         delay: 0, // No delay for batch processing
         attempts: 3,
@@ -133,12 +147,61 @@ const addEmailJob = async (emailData, options = {}) => {
   const jobOptions = { ...defaultOptions, ...options };
 
   try {
-    const job = await emailQueue.add('send-email', emailData, jobOptions);
+    try { console.log('[QueueService] attempting to add job to queue', { toEmail: emailData.toEmail }); } catch (e) { /* ignore */ }
+
+    // Wrap add in a short timeout so we don't hang indefinitely if Redis/Bull is unreachable
+    const addPromise = emailQueue.add('send-email', emailData, jobOptions);
+  const timeoutMs = Number(process.env.QUEUE_ADD_TIMEOUT_MS || 5000);
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('queue-add-timeout')), timeoutMs));
+
+    const job = await Promise.race([addPromise, timeoutPromise]);
+
     logger.log(`[QueueService] Email job added to queue: ${job.id}`);
+  try { console.log(`[QueueService] Email job added to queue: ${job.id}`, { toEmail: emailData.toEmail, subscriberId: emailData.subscriberId, automationId: emailData.automationId, templateId: emailData.templateId, actionId: emailData.actionId }); } catch (e) { /* ignore */ }
+  try { console.log('[QueueService] EMAIL_JOB_QUEUED', { jobId: job.id, toEmail: emailData.toEmail, automationId: emailData.automationId, templateId: emailData.templateId, actionId: emailData.actionId }); } catch (e) { /* ignore */ }
     return job;
   } catch (error) {
-    logger.error('[QueueService] Failed to add email job to queue:', error);
-    throw error;
+    // If the queue is unavailable (Redis down or Bull error) or the add timed out, fall back to sending inline
+    logger.error('[QueueService] Failed to add email job to queue or timed out:', { error: error && (error.message || error) });
+    try {
+      console.log('[QueueService] Queue add failed/timed out, falling back to inline send for', { toEmail: emailData.toEmail, subscriberId: emailData.subscriberId, automationId: emailData.automationId, templateId: emailData.templateId, actionId: emailData.actionId });
+    } catch (e) { /* ignore */ }
+
+    try {
+      const result = await resendUtil.sendEmail({
+        to: emailData.toEmail,
+        subject: emailData.subject,
+        html: emailData.htmlContent,
+        text: emailData.plainTextContent,
+        campaignId: emailData.campaignId,
+        subscriberId: emailData.subscriberId,
+        automationId: emailData.automationId,
+        templateId: emailData.templateId,
+        templateDisableAutoFooter: emailData.templateDisableAutoFooter || false,
+        actionId: emailData.actionId,
+        from: emailData.fromEmail,
+        fromName: emailData.fromName
+      });
+
+      // Resend SDK returns an object with an `id` when successful.
+      // Our EmailService fallback may return { success: true, messageId }.
+      const messageId = result?.id || result?.messageId || (result && result.data && result.data.id) || null;
+      const succeeded = (result && result.success === true) || !!messageId;
+
+      if (succeeded) {
+        logger.log('[QueueService] Inline send succeeded (fallback from queue add)', { toEmail: emailData.toEmail });
+        try { console.log('[QueueService] Inline send succeeded', { toEmail: emailData.toEmail, messageId }); } catch (e) { /* ignore */ }
+        try { console.log('[QueueService] EMAIL_SENT_INLINE', { toEmail: emailData.toEmail, messageId, automationId: emailData.automationId, templateId: emailData.templateId, actionId: emailData.actionId }); } catch (e) { /* ignore */ }
+        // Return a lightweight object so callers that expect job.id won't crash
+        return { id: messageId ? messageId : `inline-send-${Date.now()}`, inline: true, result };
+      } else {
+        logger.error('[QueueService] Inline send failed after queue add failure', { toEmail: emailData.toEmail, result: result });
+        throw new Error(result && result.message ? result.message : 'Inline send failed after queue add failure');
+      }
+    } catch (sendErr) {
+      logger.error('[QueueService] Fallback inline send also failed', { error: sendErr && (sendErr.message || sendErr) });
+      throw sendErr;
+    }
   }
 };
 
@@ -248,3 +311,15 @@ module.exports = {
   pauseQueue,
   resumeQueue,
 };
+
+// Startup check: verify Redis/Bull connectivity by fetching job counts
+(async function checkQueueConnectivity() {
+  try {
+    const counts = await emailQueue.getJobCounts();
+    logger.log('[QueueService] Redis/Bull connectivity OK', { counts });
+    try { console.log('[QueueService] Redis/Bull connectivity OK', { counts }); } catch (e) { /* ignore */ }
+  } catch (err) {
+    logger.error('[QueueService] Redis/Bull connectivity check failed', { error: err && (err.message || err) });
+    try { console.log('[QueueService] Redis/Bull connectivity check failed', { error: err && (err.message || err) }); } catch (e) { /* ignore */ }
+  }
+})();

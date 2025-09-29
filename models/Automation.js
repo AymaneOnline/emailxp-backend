@@ -122,4 +122,27 @@ const automationSchema = mongoose.Schema(
   }
 );
 
+// Log automation saves for debugging: id, isActive, and referenced templateIds
+automationSchema.pre('save', function(next) {
+  try {
+    const doc = this;
+    const nodes = doc.nodes || [];
+    const nodeTemplates = nodes.map(n => n?.data?.config?.templateId || n?.data?.templateId || n?.templateId || null).filter(Boolean);
+
+    // Extract trigger nodes
+    const triggers = nodes.filter(n => (n?.type === 'trigger' || n?.data?.type === 'trigger' || n?.data?.event)).map(t => ({ id: t.id || t._id || null, event: t?.data?.event || t?.data?.type || null, conditions: t?.data?.conditions || t?.conditions || [] }));
+
+    // Extract action nodes (send_template etc.)
+    const actions = nodes.filter(n => {
+      const actionType = n?.data?.type || n?.type || n?.nodeType || null;
+      return actionType && (actionType === 'send_template' || actionType === 'send-email' || actionType === 'send_email' || actionType === 'action');
+    }).map(a => ({ id: a.id || a._id || null, type: a?.data?.type || a?.type || a?.nodeType || null, templateId: a?.data?.config?.templateId || a?.data?.templateId || a?.config?.templateId || null }));
+
+    console.log('[Automation Model] saving automation', { id: doc._id ? doc._id.toString() : null, isActive: !!doc.isActive, templates: nodeTemplates, triggers, actions });
+  } catch (e) {
+    console.warn('[Automation Model] failed to log automation pre-save', e && e.message ? e.message : e);
+  }
+  next();
+});
+
 module.exports = mongoose.model('Automation', automationSchema);

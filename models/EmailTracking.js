@@ -7,7 +7,7 @@ const emailTrackingSchema = new mongoose.Schema({
   campaign: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Campaign',
-    required: true
+    required: false
   },
   
   subscriber: {
@@ -160,6 +160,34 @@ const emailTrackingSchema = new mongoose.Schema({
   uniqueClicks: {
     type: Number,
     default: 0
+  },
+
+  // If this email was sent by an Automation flow instead of a Campaign,
+  // reference the Automation for analytics.
+  automation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Automation',
+    required: false
+  },
+  // Which template produced this HTML (if any)
+  template: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Template',
+    required: false
+  },
+  // If this send was triggered by a specific Automation node, store its id
+  actionId: {
+    type: String,
+    required: false
+  },
+  // From address and display name used for this send
+  from: {
+    type: String,
+    required: false
+  },
+  fromName: {
+    type: String,
+    required: false
   },
   
   // Flags

@@ -122,6 +122,14 @@ const templateSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Template'
   }
+  ,
+  // If true, backend will not automatically append an unsubscribe footer
+  // to generated/sent HTML. Templates that already include an unsubscribe
+  // area should set this to true.
+  disableAutoFooter: {
+    type: Boolean,
+    default: false
+  }
 }, {
   timestamps: true
 });

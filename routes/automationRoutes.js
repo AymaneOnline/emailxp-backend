@@ -82,6 +82,20 @@ router.post('/', protect, asyncHandler(async (req, res) => {
   
   const createdAutomation = await automation.save();
   
+  // Log created automation details: id, active status, and referenced template(s)
+  try {
+    const nodes = createdAutomation.nodes || [];
+    const nodeTemplates = nodes.map(n => n?.data?.config?.templateId || n?.config?.templateId || n?.data?.templateId || n?.templateId || null).filter(Boolean);
+    const triggers = nodes.filter(n => (n?.type === 'trigger' || n?.data?.type === 'trigger' || n?.data?.event)).map(t => ({ id: t.id || t._id || null, event: t?.data?.event || t?.data?.type || null, conditions: t?.data?.conditions || t?.conditions || [] }));
+    const actions = nodes.filter(n => {
+      const actionType = n?.data?.type || n?.type || n?.nodeType || null;
+      return actionType && (actionType === 'send_template' || actionType === 'send-email' || actionType === 'send_email' || actionType === 'action');
+    }).map(a => ({ id: a.id || a._id || null, type: a?.data?.type || a?.type || a?.nodeType || null, templateId: a?.data?.config?.templateId || a?.data?.templateId || a?.config?.templateId || null }));
+    logger.info('[AutomationRoutes] automation created', { automationId: createdAutomation._id.toString(), isActive: !!createdAutomation.isActive, templates: nodeTemplates, triggers, actions });
+  } catch (e) {
+    logger.warn('[AutomationRoutes] failed to log automation details', { error: e?.message || e });
+  }
+
   res.status(201).json({ success: true, automation: createdAutomation });
 }));
 
@@ -232,6 +246,19 @@ router.post('/:id/duplicate', protect, asyncHandler(async (req, res) => {
   
   const createdAutomation = await duplicatedAutomation.save();
   
+  try {
+    const nodesD = createdAutomation.nodes || [];
+    const nodeTemplatesD = nodesD.map(n => n?.data?.config?.templateId || n?.config?.templateId || n?.data?.templateId || n?.templateId || null).filter(Boolean);
+    const triggersD = nodesD.filter(n => (n?.type === 'trigger' || n?.data?.type === 'trigger' || n?.data?.event)).map(t => ({ id: t.id || t._id || null, event: t?.data?.event || t?.data?.type || null, conditions: t?.data?.conditions || t?.conditions || [] }));
+    const actionsD = nodesD.filter(n => {
+      const actionType = n?.data?.type || n?.type || n?.nodeType || null;
+      return actionType && (actionType === 'send_template' || actionType === 'send-email' || actionType === 'send_email' || actionType === 'action');
+    }).map(a => ({ id: a.id || a._id || null, type: a?.data?.type || a?.type || a?.nodeType || null, templateId: a?.data?.config?.templateId || a?.data?.templateId || a?.config?.templateId || null }));
+    logger.info('[AutomationRoutes] automation duplicated', { automationId: createdAutomation._id.toString(), isActive: !!createdAutomation.isActive, templates: nodeTemplatesD, triggers: triggersD, actions: actionsD });
+  } catch (e) {
+    logger.warn('[AutomationRoutes] failed to log duplicated automation details', { error: e?.message || e });
+  }
+
   res.status(201).json({ success: true, automation: createdAutomation });
 }));
 

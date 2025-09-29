@@ -4,7 +4,9 @@ const CampaignSchedule = require('../models/CampaignSchedule');
 const Campaign = require('../models/Campaign');
 const Subscriber = require('../models/Subscriber');
 const Template = require('../models/Template');
-const { sendEmail } = require('../services/emailService');
+const emailService = require('../services/emailService');
+const EventEmitter = require('events');
+const campaignAutomationEmitter = new EventEmitter();
 // Tracking is handled within emailService by injecting pixel and link redirects
 
 class CampaignAutomationEngine {
@@ -39,7 +41,12 @@ class CampaignAutomationEngine {
     try {
       const now = new Date();
       
-      // Find campaigns that should be executed
+
+      // Find campaigns that should be executed. Note: trigger-type schedules
+      // (scheduleType === 'trigger') are event-driven and executed via
+      // handleSubscriberAdded / handleTagAdded, so exclude them from the
+      // periodic pending check to avoid confusion (they may be 'running'
+      // but have no stats.nextExecution).
       const pendingSchedules = await CampaignSchedule.find({
         $or: [
           { 
@@ -51,10 +58,11 @@ class CampaignAutomationEngine {
             'stats.nextExecution': { $lte: now }
           }
         ],
-        isActive: true
+        isActive: true,
+        scheduleType: { $ne: 'trigger' }
       }).populate('campaign').populate('user');
 
-      console.log(`Found ${pendingSchedules.length} pending campaign schedules`);
+      console.log(`Found ${pendingSchedules.length} pending campaign schedules (excluding trigger-type schedules)`);
 
       for (const schedule of pendingSchedules) {
         await this.executeCampaignSchedule(schedule);
@@ -311,17 +319,17 @@ class CampaignAutomationEngine {
     );
 
     // Send email using central email service (handles tracking injection)
-    await sendEmail(
-      recipient.email,
-      personalizedSubject,
-      personalizedContent,
-      '',
-      campaign._id,
-      recipient._id,
-      undefined,
-      campaign.fromEmail,
-      campaign.fromName
-    );
+    await emailService.sendEmail({
+      to: recipient.email,
+      subject: personalizedSubject,
+      html: personalizedContent,
+      text: '',
+      campaignId: campaign._id,
+      subscriberId: recipient._id,
+      organizationId: undefined,
+      from: campaign.fromEmail,
+      fromName: campaign.fromName
+    });
   }
 
   personalizeContent(content, recipient) {
@@ -399,8 +407,83 @@ class CampaignAutomationEngine {
       'triggers.event': 'subscriber_added',
       status: 'running',
       isActive: true
-    });
+    }).populate('campaign').populate('user');
     console.log('[Automation] found triggerSchedules:', Array.isArray(triggerSchedules) ? triggerSchedules.length : 0);
+
+  // Also find Automations that have a trigger node for subscriber_added so they execute on subscriber add
+  let totalAutomationsMatched = 0;
+  let totalAutomationActionsRun = 0;
+  let totalAutomationEmailsQueued = 0;
+  let totalScheduleTriggersMatched = 0;
+  try {
+      const Automation = require('../models/Automation');
+      const { executeAutomation } = require('./automationExecutor');
+      // Find all active automations for the user and filter in JS to support
+      // multiple node shapes produced by different editor versions.
+      const allAutomations = await Automation.find({ user: subscriber.user, isActive: true });
+      const automations = (allAutomations || []).filter(a => {
+        const nodes = a.nodes || [];
+        return nodes.some(n => {
+          // Support various shapes where the trigger event might be stored
+          const event = n?.data?.event || n?.data?.triggerType || n?.data?.eventType || n?.event || n?.triggerType || n?.type;
+          // When node encodes its type separately, ensure it's a trigger node or explicitly contains subscriber_added
+          const nodeType = n?.type || n?.nodeType || n?.data?.type || n?.data?.nodeType;
+          if (!event) return false;
+          if (String(event) === 'subscriber_added') return true;
+          // Some nodes store type as 'trigger' and event as nested value
+          if ((nodeType === 'trigger' || String(nodeType) === 'trigger') && String(n?.data?.event) === 'subscriber_added') return true;
+          return false;
+        });
+      });
+  console.log('[Automation] found automations matching subscriber_added:', Array.isArray(automations) ? automations.length : 0);
+  totalAutomationsMatched = Array.isArray(automations) ? automations.length : 0;
+      for (const a of automations) {
+        try {
+          const nodes = a.nodes || [];
+          const triggers = nodes.filter(n => (n?.type === 'trigger' || n?.data?.type === 'trigger' || n?.data?.event)).map(t => ({ id: t.id || t._id || null, event: t?.data?.event || t?.data?.type || null, conditions: t?.data?.conditions || t?.conditions || [] }));
+          const actions = nodes.filter(n => {
+            const actionType = n?.data?.type || n?.type || n?.nodeType || null;
+            return actionType && (actionType === 'send_template' || actionType === 'send-email' || actionType === 'send_email' || actionType === 'action');
+          }).map(aNode => ({ id: aNode.id || aNode._id || null, type: aNode?.data?.type || aNode?.type || aNode?.nodeType || null, templateId: aNode?.data?.config?.templateId || aNode?.data?.templateId || aNode?.config?.templateId || null }));
+
+          console.log('[Automation] executing automation on subscriber_added', { automationId: a._id.toString(), name: a.name, triggers, actions, subscriberId: subscriber._id ? subscriber._id.toString() : null });
+          // Execute and capture summary so we can log whether the automation queued sends
+          const execSummary = await executeAutomation(a, { userId: a.user, subscriberId: subscriber._id, event: 'subscriber_added' }).catch(err => {
+            console.error('[Automation] automation execution error', { automationId: a._id ? a._id.toString() : null, error: err && err.message ? err.message : err });
+            return null;
+          });
+
+          console.log('[Automation] automation execution summary for subscriber_added', { automationId: a._id ? a._id.toString() : null, summary: execSummary });
+          if (execSummary) {
+            totalAutomationActionsRun += execSummary.actionsRun || 0;
+            totalAutomationEmailsQueued += execSummary.emailsQueued || 0;
+          }
+        } catch (err) {
+          console.error('[Automation] failed to execute automation', { automationId: a._id ? a._id.toString() : null, error: err && err.message ? err.message : err });
+        }
+      }
+    } catch (err) {
+      console.warn('[Automation] error finding/executing automations for subscriber_added', { error: err && err.message ? err.message : err });
+    }
+
+    // If automations already queued emails for this subscriber, skip executing
+    // trigger-type campaign schedules to avoid sending duplicate templates.
+    // This is a conservative default - if you want trigger schedules to still
+    // run even when automations fired, we can add a per-schedule flag later.
+    if (totalAutomationEmailsQueued > 0) {
+      console.log('[Automation] automations queued emails for subscriber - skipping trigger-type campaign schedules to avoid duplicate sends', { subscriberId: subscriber._id ? subscriber._id.toString() : null, totalAutomationEmailsQueued });
+      // Final concise summary for this subscriber add: whether automations and/or schedules matched and queued sends
+      const summary = {
+        subscriberId: subscriber._id ? subscriber._id.toString() : null,
+        automationsMatched: totalAutomationsMatched,
+        automationActionsRun: totalAutomationActionsRun,
+        automationEmailsQueued: totalAutomationEmailsQueued,
+        scheduleTriggersMatched: 0
+      };
+      console.log('[Automation] subscriber_added summary', summary);
+      try { campaignAutomationEmitter.emit('subscriber_summary', summary); } catch (e) { console.warn('[Automation] failed to emit subscriber_summary', { error: e?.message || e }); }
+      return;
+    }
 
     for (const schedule of triggerSchedules) {
       // Check if subscriber meets trigger conditions
@@ -409,24 +492,43 @@ class CampaignAutomationEngine {
         this.evaluateConditions(subscriber, trigger.conditions || [])
       );
 
+      console.log('[Automation] examining trigger schedule', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, triggersTotal: (schedule.triggers || []).length, matchedTriggers: applicableTriggers.length });
+
       if (applicableTriggers.length > 0) {
         console.log('[Automation] schedule matches subscriber_added:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, matchedTriggers: applicableTriggers.length });
       } else {
         console.log('[Automation] schedule did NOT match conditions:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id });
       }
 
+      // Count matched triggers for the final summary
+      totalScheduleTriggersMatched += applicableTriggers.length;
+
       for (const trigger of applicableTriggers) {
         // Schedule execution with delay
+        const delayMs = this.convertDelayToMilliseconds(trigger.delay, trigger.delayUnit);
+        console.log('[Automation] scheduling execution for trigger', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, triggerId: trigger.id || trigger._id, delayMs });
         setTimeout(async () => {
           try {
             console.log('[Automation] executing trigger schedule:', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, triggerId: trigger.id || trigger._id });
-            await this.executeCampaignSchedule(schedule);
+            const result = await this.executeCampaignSchedule(schedule);
+            console.log('[Automation] trigger schedule execution result summary', { scheduleId: schedule._id ? schedule._id.toString() : schedule.id, result });
           } catch (err) {
             console.error('[Automation] failed executing trigger schedule:', err && err.message ? err.message : err);
           }
-        }, this.convertDelayToMilliseconds(trigger.delay, trigger.delayUnit));
+        }, delayMs);
       }
     }
+    // Final concise summary for this subscriber add: whether automations and/or schedules matched and queued sends
+    const summary = {
+      subscriberId: subscriber._id ? subscriber._id.toString() : null,
+      automationsMatched: totalAutomationsMatched,
+      automationActionsRun: totalAutomationActionsRun,
+      automationEmailsQueued: totalAutomationEmailsQueued,
+      scheduleTriggersMatched: totalScheduleTriggersMatched
+    };
+    console.log('[Automation] subscriber_added summary', summary);
+    // Emit summary for any listeners (diagnostic hooks)
+    try { campaignAutomationEmitter.emit('subscriber_summary', summary); } catch (e) { console.warn('[Automation] failed to emit subscriber_summary', { error: e?.message || e }); }
   }
 
   async handleTagAdded(subscriber, tag) {
@@ -457,5 +559,6 @@ const campaignAutomationEngine = new CampaignAutomationEngine();
 
 module.exports = {
   CampaignAutomationEngine,
-  campaignAutomationEngine
+  campaignAutomationEngine,
+  campaignAutomationEmitter
 };

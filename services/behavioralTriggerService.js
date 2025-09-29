@@ -15,6 +15,14 @@ const { executeAutomation } = require('./automationExecutor');
  */
 const processBehavioralEvent = async (eventData) => {
   try {
+    // Normalize some non-standard event types coming from other parts of the system
+    // (e.g. subscriber_added from subscriber creation). The BehavioralEvent schema
+    // expects a fixed enum; map unknown types to 'custom' and set customEventType
+    if (eventData && eventData.eventType && eventData.eventType === 'subscriber_added') {
+      eventData.customEventType = eventData.customEventType || 'subscriber_added';
+      eventData.eventType = 'custom';
+    }
+
     // Create the behavioral event
     const event = new BehavioralEvent(eventData);
     await event.save();

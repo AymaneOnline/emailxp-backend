@@ -7,6 +7,9 @@ const Subscriber = require('../models/Subscriber');
 const Group = require('../models/Group');
 const logger = require('../utils/logger');
 const { campaignAutomationEngine } = require('../services/campaignAutomation');
+const behavioralTriggerService = require('../services/behavioralTriggerService');
+const Automation = require('../models/Automation');
+const { executeAutomation } = require('../services/automationExecutor');
 // tag cleanup removed
 
 // @desc    Get subscriber activity history (unified opens, clicks, status entries) with pagination
@@ -160,8 +163,8 @@ const getSubscribers = asyncHandler(async (req, res) => {
         sortOrder = 'desc'
     } = req.query;
 
-    console.log('Get subscribers request:', { groupId, status, search, page, limit, sortBy, sortOrder });
-    console.log('User ID:', req.user.id);
+    logger.debug('Get subscribers request:', { groupId, status, search, page, limit, sortBy, sortOrder });
+    logger.debug('User ID:', req.user.id);
 
     // Build query for user's subscribers
     const query = { user: req.user.id, isDeleted: false };
@@ -463,23 +466,101 @@ const createSubscriber = asyncHandler(async (req, res) => {
         }
     }
 
+        // Diagnostic (synchronous): determine whether subscriber_added would trigger automations/templates
+        try {
+            const Automation = require('../models/Automation');
+            const allAutomationsForUser = await Automation.find({ user: populatedSubscriber.user, isActive: true });
+            let diagAutomationsMatched = 0;
+            let diagEstimatedTemplateSends = 0;
+            const diagList = [];
+            for (const a of (allAutomationsForUser || [])) {
+                const nodes = a.nodes || [];
+                const matches = nodes.some(n => {
+                    const event = n?.data?.event || n?.data?.triggerType || n?.data?.eventType || n?.event || n?.triggerType || n?.type;
+                    const nodeType = n?.type || n?.nodeType || n?.data?.type || n?.data?.nodeType;
+                    if (!event) return false;
+                    if (String(event) === 'subscriber_added') return true;
+                    if ((nodeType === 'trigger' || String(nodeType) === 'trigger') && String(n?.data?.event) === 'subscriber_added') return true;
+                    return false;
+                });
+                if (matches) {
+                    diagAutomationsMatched += 1;
+                    // count actions that look like send_template
+                    const actionCount = (a.nodes || []).reduce((sum, n) => {
+                        const actionType = n?.data?.type || n?.type || n?.nodeType || null;
+                        if (actionType && (actionType === 'send_template' || actionType === 'send-email' || actionType === 'send_email' || actionType === 'action')) return sum + 1;
+                        return sum;
+                    }, 0);
+                    diagEstimatedTemplateSends += actionCount;
+                    diagList.push({ automationId: a._id ? a._id.toString() : null, name: a.name, actionCount });
+                }
+            }
+            logger.info('[SubscriberController] SUBSCRIBER_TRIGGER_DIAGNOSTIC', { subscriberId: populatedSubscriber._id ? populatedSubscriber._id.toString() : null, automationsMatched: diagAutomationsMatched, estimatedTemplateSends: diagEstimatedTemplateSends, automations: diagList });
+            // Mirror to console so it always appears in logs regardless of logger level
+            try {
+                console.log('[SubscriberController] SUBSCRIBER_TRIGGER_DIAGNOSTIC', JSON.stringify({ subscriberId: populatedSubscriber._id ? populatedSubscriber._id.toString() : null, automationsMatched: diagAutomationsMatched, estimatedTemplateSends: diagEstimatedTemplateSends, automations: diagList }));
+            } catch (e) {
+                console.log('[SubscriberController] SUBSCRIBER_TRIGGER_DIAGNOSTIC', { subscriberId: populatedSubscriber._id ? populatedSubscriber._id.toString() : null, automationsMatched: diagAutomationsMatched, estimatedTemplateSends: diagEstimatedTemplateSends, automations: diagList });
+            }
+        } catch (diagErr) {
+            logger.warn('[SubscriberController] SUBSCRIBER_TRIGGER_DIAGNOSTIC failed', { error: diagErr && diagErr.message ? diagErr.message : diagErr });
+        }
+
         // Fire subscriber_added automations safely and non-blocking.
         try {
             const enabled = String(process.env.ENABLE_AUTOMATION_ON_SUBSCRIBE || '0') === '1';
             const isSubscribed = (populatedSubscriber.status === 'subscribed');
             const isImport = (populatedSubscriber.source === 'import');
+            logger.info('[SubscriberController] automation trigger checks', { ENABLE_AUTOMATION_ON_SUBSCRIBE: process.env.ENABLE_AUTOMATION_ON_SUBSCRIBE, enabled, isSubscribed, isImport, subscriberId: populatedSubscriber._id });
 
             if (enabled && isSubscribed && !isImport && campaignAutomationEngine && typeof campaignAutomationEngine.handleSubscriberAdded === 'function') {
                 // Use setImmediate to avoid blocking the response and protect from sync errors
+                logger.info('[SubscriberController] scheduling handleSubscriberAdded', { subscriberId: populatedSubscriber._id });
                 setImmediate(() => {
                     try {
+                        // Attach a one-time listener to receive the summary emitted by the engine
+                        try {
+                            const { campaignAutomationEmitter } = require('../services/campaignAutomation');
+                            const onSummary = (summary) => {
+                                logger.info('[SubscriberController] subscriber_add processing summary arrived', summary);
+                                try { console.log('[SubscriberController] subscriber_add processing summary', JSON.stringify(summary)); } catch (e) { console.log('[SubscriberController] subscriber_add processing summary', summary); }
+                            };
+                            campaignAutomationEmitter.once('subscriber_summary', onSummary);
+                        } catch (e) {
+                            logger.warn('[SubscriberController] could not attach subscriber_summary listener', { error: e?.message || e });
+                        }
+
                         campaignAutomationEngine.handleSubscriberAdded(populatedSubscriber);
                         logger.info('[SubscriberController] triggered subscriber_added automations', { user: populatedSubscriber.user, subscriberId: populatedSubscriber._id });
                     } catch (err) {
                         logger.warn('[SubscriberController] failed to trigger subscriber_added automations', { error: err?.message || err });
                     }
                 });
+            } else {
+                logger.info('[SubscriberController] subscriber_added automations skipped', { enabled, isSubscribed, isImport, subscriberId: populatedSubscriber._id });
             }
+
+            // Also process behavioral triggers (these can reference Automations directly)
+            try {
+                if (behavioralTriggerService && typeof behavioralTriggerService.processBehavioralEvent === 'function') {
+                    logger.info('[SubscriberController] invoking behavioralTriggerService for subscriber_added event', { subscriberId: populatedSubscriber._id, user: populatedSubscriber.user });
+                    // Fire in background
+                    setImmediate(async () => {
+                        try {
+                            const results = await behavioralTriggerService.processBehavioralEvent({ user: populatedSubscriber.user, subscriber: populatedSubscriber._id, eventType: 'subscriber_added' });
+                            logger.info('[SubscriberController] behavioralTriggerService results', { triggered: results });
+                        } catch (err) {
+                            logger.warn('[SubscriberController] behavioralTriggerService error', { error: err?.message || err });
+                        }
+                    });
+                }
+            } catch (err) {
+                logger.warn('[SubscriberController] failed to invoke behavioralTriggerService', { error: err?.message || err });
+            }
+
+            // Note: automations for subscriber_added are handled by campaignAutomationEngine.handleSubscriberAdded
+            // to avoid duplicate execution we do not re-query and execute automations here.
+            logger.debug('[SubscriberController] automations will be handled by campaignAutomationEngine (no duplicate direct execution)');
         } catch (err) {
             // Do not block subscriber creation on automation errors
             logger.warn('[SubscriberController] automation trigger check failed', { error: err?.message || err });
@@ -1103,10 +1184,17 @@ const unsubscribeSubscriber = asyncHandler(async (req, res) => {
         });
     }
 
-    // Mark as unsubscribed
-    subscriber.status = 'unsubscribed';
-    subscriber.unsubscribedAt = new Date();
-    await subscriber.save();
+        // Remove subscriber from database per user's request
+        try {
+            await Subscriber.deleteOne({ _id: subscriber._id });
+            console.log(`[SubscriberController] Deleted subscriber ${subscriber._id} via unsubscribe (POST)`);
+        } catch (err) {
+            console.error('[SubscriberController] Failed to delete subscriber on unsubscribe (POST):', err && err.message ? err.message : err);
+            // Fall back to marking unsubscribed if delete fails for some reason
+            subscriber.status = 'unsubscribed';
+            subscriber.unsubscribedAt = new Date();
+            await subscriber.save();
+        }
 
     // Log the unsubscribe event if campaignId is provided
     if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
@@ -1135,15 +1223,22 @@ const handleUnsubscribeLink = asyncHandler(async (req, res) => {
         return res.status(200).send('Successfully unsubscribed');
     }
 
-    // Mark as unsubscribed (industry standard - don't delete for compliance)
-    subscriber.status = 'unsubscribed';
-    subscriber.unsubscribedAt = new Date();
-    await subscriber.save();
+        // Remove subscriber from database (user requested hard-delete on unsubscribe)
+        try {
+            await Subscriber.deleteOne({ _id: subscriber._id });
+            console.log(`[SubscriberController] Deleted subscriber ${subscriber._id} via unsubscribe (link)`);
+        } catch (err) {
+            console.error('[SubscriberController] Failed to delete subscriber on unsubscribe (link):', err && err.message ? err.message : err);
+            // Fall back to marking unsubscribed if delete fails
+            subscriber.status = 'unsubscribed';
+            subscriber.unsubscribedAt = new Date();
+            await subscriber.save();
+        }
 
-    // Log the unsubscribe event
-    if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
-        console.log(`Subscriber ${subscriber._id} unsubscribed via link from campaign ${campaignId}`);
-    }
+        // Log the unsubscribe event
+        if (campaignId && mongoose.Types.ObjectId.isValid(campaignId)) {
+                console.log(`Subscriber ${subscriber._id} unsubscribed via link from campaign ${campaignId}`);
+        }
 
     // Return a simple HTML page confirming unsubscribe
     res.status(200).send(`

@@ -1,8 +1,9 @@
 // emailxp/backend/utils/resendEmailService.js
 
 const { Resend } = require('resend'); // Import the Resend SDK
-// Local email service fallback (nodemailer-based)
-const EmailService = require('./emailService');
+// Local email service fallback (nodemailer-based). The module exports an instance
+// (module.exports = new EmailService()), so require() returns the instance.
+const emailServiceInstance = require('./emailService');
 
 let resend = null;
 if (process.env.RESEND_API_KEY) {
@@ -28,6 +29,44 @@ console.log('🔄 RESEND UTIL MODULE LOADED - Using sender:', process.env.EMAIL_
 const addUnsubscribeFooter = (html, subscriberId, campaignId) => {
     const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
     const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${subscriberId}${campaignId ? `/${campaignId}` : ''}`;
+    // If the template already contains an unsubscribe link or footer text, don't add another.
+    // Check for common markers: the {{unsubscribeUrl}} placeholder, explicit '/unsubscribe' links,
+    // or the common English footer sentence.
+    try {
+        const lc = (html || '').toLowerCase();
+        if (!lc) return html;
+
+        const hasToken = lc.includes('{{unsubscribeurl}}');
+        const hasHref = /href\s*=/.test(lc);
+        const hasUnsubscribePath = lc.includes('/unsubscribe');
+        const hasFooterPhrase = lc.includes('you are receiving this email because') || lc.includes('you are receiving this email');
+
+        // If template explicitly has a token or any href or direct /unsubscribe path, assume it already has a working link and do nothing
+        if (hasToken || hasHref || hasUnsubscribePath) {
+            return html;
+        }
+
+        // If it mentions the common footer phrase but doesn't include a link/token, try to convert a nearby 'Unsubscribe' plain text into a link
+        if (hasFooterPhrase) {
+            try {
+                // Find the footer phrase and up to 400 chars following it
+                const footerMatch = /you are receiving this email because[\s\S]{0,400}/i.exec(html);
+                if (footerMatch) {
+                    const region = footerMatch[0];
+                    if (/unsubscribe/i.test(region)) {
+                        const replacedRegion = region.replace(/\b(Unsubscribe)\b/i, `<a href="${unsubscribeUrl}">Unsubscribe</a>`);
+                        return html.replace(region, replacedRegion);
+                    }
+                }
+            } catch (e2) {
+                console.warn('[ResendUtil] failed to convert footer Unsubscribe into link', e2 && e2.message);
+            }
+            // If we couldn't convert, fall through to append our footer as a safe fallback
+        }
+    } catch (e) {
+        // If any issue checking, fall back to appending footer (safe default)
+        console.warn('[ResendUtil] failed to inspect HTML for existing unsubscribe footer', e && e.message);
+    }
 
     const footerHtml = `
         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e5e5; text-align: center; font-size: 12px; color: #666;">
@@ -62,9 +101,9 @@ const addUnsubscribeFooter = (html, subscriberId, campaignId) => {
  * @param {string} [options.subscriberId] - Subscriber ID for unsubscribe footer.
  * @param {string} [options.campaignId] - Campaign ID for unsubscribe tracking.
  */
-const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId, campaignId }) => {
+const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId, campaignId, templateDisableAutoFooter = false }) => {
     // Debug logging to track what's being passed
-    console.log('DEBUG Resend Util - Received params:', { to, from, fromName });
+    console.log('DEBUG Resend Util - Received params:', { to, from, fromName, templateDisableAutoFooter });
     
     // If a specific from address supplied (already validated upstream) use it; else fallback to global
     const fallback = process.env.EMAIL_FROM;
@@ -76,10 +115,37 @@ const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId
     
     console.log('DEBUG Resend Util - Using finalFrom:', finalFrom);
 
-    // Add unsubscribe footer if subscriber info is provided
-    let finalHtml = html;
+    // Prepare finalHtml and ensure any {{unsubscribeUrl}} tokens are replaced with a working link.
+    // We try to preserve authored anchor tags and avoid nested anchors.
+    let finalHtml = html || '';
     if (subscriberId) {
-        finalHtml = addUnsubscribeFooter(html, subscriberId, campaignId);
+        const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+        const unsubscribeUrl = `${baseUrl}/api/subscribers/unsubscribe/${subscriberId}${campaignId ? `/${campaignId}` : ''}`;
+
+        try {
+            // Normalize common encoded token patterns first
+            finalHtml = finalHtml.replace(/%7B%7B\s*unsubscribeUrl\s*%7D%7D/gi, '{{unsubscribeUrl}}');
+
+            // If the href attribute uses the token directly (href="{{unsubscribeUrl}}"), replace href with real URL first
+            finalHtml = finalHtml.replace(/href\s*=\s*(?:"|')\s*\{\{\s*unsubscribeUrl\s*\}\}\s*(?:"|')/gi, `href="${unsubscribeUrl}"`);
+
+            // If the template authored an <a>{{unsubscribeUrl}}</a> replace the inner token with a proper href
+            finalHtml = finalHtml.replace(/<a([^>]*)>\s*\{\{\s*unsubscribeUrl\s*\}\}\s*<\/a>/gi, (match, attrs) => {
+                // Remove any existing href attribute in attrs to avoid duplicate hrefs
+                const cleanedAttrs = (attrs || '').replace(/\s*href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+                return `<a${cleanedAttrs} href="${unsubscribeUrl}" aria-label="unsubscribe">Unsubscribe</a>`;
+            });
+
+            // Replace any remaining raw {{unsubscribeUrl}} tokens with a clickable Unsubscribe link
+            finalHtml = finalHtml.replace(/\{\{\s*unsubscribeUrl\s*\}\}/gi, `<a href="${unsubscribeUrl}" aria-label="unsubscribe">Unsubscribe</a>`);
+        } catch (e) {
+            console.warn('[ResendUtil] failed to replace unsubscribe token:', e && e.message);
+        }
+    }
+
+    // Add unsubscribe footer if subscriber info is provided and template does not opt-out
+    if (subscriberId && !templateDisableAutoFooter) {
+        finalHtml = addUnsubscribeFooter(finalHtml, subscriberId, campaignId);
     }
 
     // If Resend is available, try to send with it first
@@ -117,8 +183,8 @@ const sendEmail = async ({ to, subject, html, text, from, fromName, subscriberId
 
     // Fallback: use the nodemailer-based EmailService
     try {
-        const emailSvc = new EmailService();
-        const result = await emailSvc.sendEmail({ to, subject, html: finalHtml, text, from: finalFrom });
+        // emailServiceInstance is an instance with sendEmail()
+        const result = await emailServiceInstance.sendEmail({ to, subject, html: finalHtml, text, from: finalFrom, subscriberId, campaignId });
         console.log('Email sent via fallback EmailService:', result);
         return result;
     } catch (fallbackErr) {

@@ -30,7 +30,10 @@ const subscriberSchema = new mongoose.Schema(
             default: 'subscribed',
             index: true
         },
-        // tags removed
+        tags: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Tag'
+        }],
         groups: [{
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Group'

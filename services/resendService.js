@@ -16,7 +16,7 @@ class ResendService {
       throw new Error('Resend not configured. Please add RESEND_API_KEY and EMAIL_FROM to .env file');
     }
 
-    const { to, from, subject, html, text, fromName, campaignId, subscriberId, campaignType = 'marketing', organizationId } = emailData;
+  const { to, from, subject, html, text, fromName, campaignId, automationId, subscriberId, campaignType = 'marketing', organizationId } = emailData;
     console.log('ResendService sendEmail called with html length:', html ? html.length : 'undefined');
     console.log('HTML content preview:', html ? html.substring(0, 200) + '...' : 'no html');
     
@@ -49,24 +49,32 @@ class ResendService {
       from, 
       fromName: fromName || process.env.MAILERSEND_FROM_NAME || 'EmailXP',
       subscriberId,
-      campaignId
+      campaignId,
+      templateDisableAutoFooter: emailData.templateDisableAutoFooter || false
     });
 
-    // Create tracking record
-    if (campaignId && subscriberId) {
-      console.log(`Creating EmailTracking record for campaign: ${campaignId}, subscriber: ${subscriberId}, org: ${organizationId}`);
+    // Create tracking record for campaign or automation sends
+    if ((campaignId || automationId) && subscriberId) {
+      console.log(`Creating EmailTracking record for campaign:${campaignId || 'none'} automation:${automationId || 'none'} subscriber: ${subscriberId}, org: ${organizationId}`);
       await emailTrackingUtil.createTrackingRecord({
-        campaign: campaignId,
+        campaign: campaignId || null,
+        automation: automationId || null,
         subscriber: subscriberId,
         organization: organizationId || null,
         emailAddress: to,
         subject,
         messageId,
-        status: 'sent'
+        status: 'sent',
+        from: from || null,
+        fromName: fromName || null,
+        // propagate template/action info when present in emailData
+        template: emailData.templateId || emailData.template || null,
+        actionId: emailData.actionId || null
       });
+      // Note: we purposely do not modify the return payload to include from/fromName
       console.log(`EmailTracking record creation attempted for messageId: ${messageId}`);
     } else {
-      console.log(`Skipping EmailTracking creation - missing params: campaignId=${!!campaignId}, subscriberId=${!!subscriberId}, organizationId=${!!organizationId}`);
+      console.log(`Skipping EmailTracking creation - missing params: campaignId=${!!campaignId}, automationId=${!!automationId}, subscriberId=${!!subscriberId}`);
     }
 
     return {

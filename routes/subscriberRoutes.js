@@ -21,7 +21,10 @@ const {
     unsubscribeSubscriber,
     handleUnsubscribeLink
 } = require('../controllers/subscriberController');
+const { importCsvSubscribers } = require('../controllers/bulkImportController');
 const { protect } = require('../middleware/authMiddleware');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 const {
     validateSubscriber,
     validateSubscriberUpdate
@@ -65,6 +68,8 @@ router.route('/:id')
 
 // Bulk operations
 router.post('/import', validateBulkImport, bulkImportSubscribers);
+// CSV import (multipart/form-data file upload)
+router.post('/import/csv', upload.single('file'), importCsvSubscribers);
 router.delete('/bulk', bulkDeleteSubscribers);
 router.post('/bulk/status', bulkUpdateSubscriberStatus);
 router.post('/bulk/export', exportSelectedSubscribers);
