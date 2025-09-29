@@ -1,0 +1,11 @@
+Email,First Name,Last Name,Status,Tags,Groups
+alice@example.com,Alice,Anderson,subscribed,vip;beta,Customers
+bob@example.org,Bob,Baker,subscribed,,Prospects
+charlie@test.net,Charlie,Chaplin,unsubscribed,do-not-mail,Inactive
+dana+promo@example.com,Dana,White,subscribed,early;trial,Customers
+elena@example.co,Elena,Gomez,subscribed,,Newsletter
+frank@example.io,Frank,Underwood,pending,politics,Leads
+grace@example.com,Grace,Hopper,subscribed,developer;vip,Engineering
+henry@company.com,Henry,Smith,bounced,,Bounces
+isabel@domain.com,Isabel,Garcia,subscribed,trial,Prospects
+jason@sample.com,Jason,Bourne,subscribed,,Customers

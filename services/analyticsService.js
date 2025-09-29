@@ -337,7 +337,7 @@ class AnalyticsService {
       let campaignDeliveredFallback = 0;
       try {
         const campaignAgg = await Campaign.aggregate([
-          { $match: { user: new mongoose.Types.ObjectId(userId), createdAt: { $gte: periodStart } } },
+          { $match: { user: new mongoose.Types.ObjectId(userId), sentAt: { $gte: periodStart } } },
           { $group: {
             _id: null,
             campaignSentSum: { $sum: '$emailsSuccessfullySent' },
@@ -411,7 +411,7 @@ class AnalyticsService {
       let sentCampaignsCount = 0;
       try {
         const sentCountAgg = await Campaign.aggregate([
-          { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent', createdAt: { $gte: periodStart } } },
+          { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent', sentAt: { $gte: periodStart } } },
           { $group: { _id: null, count: { $sum: 1 } } }
         ]);
         if (Array.isArray(sentCountAgg) && sentCountAgg[0]) sentCampaignsCount = sentCountAgg[0].count || 0;
