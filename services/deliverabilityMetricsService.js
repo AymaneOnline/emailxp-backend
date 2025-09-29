@@ -135,8 +135,12 @@ async function getInsights({ days = 30 }) {
     const pick = p => sorted[Math.min(sorted.length-1, Math.floor(p*sorted.length))];
     return { p50: pick(0.50), p75: pick(0.75), p90: pick(0.90), p95: pick(0.95), p99: pick(0.99) };
   }
-  const openLatencies = latencyDocs.filter(d=>d.openLatencyMs!=null).map(d=>d.openLatencyMs);
-  const clickLatencies = latencyDocs.filter(d=>d.clickLatencyMs!=null).map(d=>d.clickLatencyMs);
+  // Exclude entries that also have click latency from open-latency bucket to avoid
+  // double-counting (a clicked record may include an openedAt timestamp but is
+  // treated as 'clicked' in the funnel counts). Keep click latencies intact for
+  // click percentile calculations.
+  const openLatencies = latencyDocs.filter(d => d.openLatencyMs != null && d.clickLatencyMs == null).map(d => d.openLatencyMs);
+  const clickLatencies = latencyDocs.filter(d => d.clickLatencyMs != null).map(d => d.clickLatencyMs);
   const latency = {
     open: computePercentiles(openLatencies),
     click: computePercentiles(clickLatencies)
