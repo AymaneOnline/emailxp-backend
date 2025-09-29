@@ -159,9 +159,11 @@ class EmailService {
   addTrackingPixel(html, messageId) {
     if (!html) return html;
 
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
-    console.log('Generating tracking pixel with backendUrl:', backendUrl);
-    const trackingPixel = `<img src="${backendUrl}/api/track/open/${messageId}" width="1" height="1" style="display:none;" alt="" />`;
+      // Use explicit BACKEND_URL when provided (production). Always encode messageId
+      // so characters such as @ do not break URL parsing in some mail clients.
+      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+      try { console.log('Generating tracking pixel with backendUrl:', backendUrl); } catch (e) { /* ignore */ }
+      const trackingPixel = `<img src="${backendUrl.replace(/\/$/, '')}/api/track/open/${encodeURIComponent(messageId)}" width="1" height="1" style="display:none;" alt="" />`;
     
     // Try to insert before closing body tag, otherwise append
     if (html.includes('</body>')) {
@@ -191,12 +193,16 @@ class EmailService {
       console.log(`Processing link ${matchCount}:`, match, 'URL:', url);
       
       // Skip if already a tracking link or mailto/tel links
-      if (url.includes('/api/track/click/') || url.startsWith('mailto:') || url.startsWith('tel:')) {
+        // If the url already points to a tracking endpoint or is a mailto/tel link, skip
+        if (url.includes('/api/track/click/') || url.startsWith('mailto:') || url.startsWith('tel:')) {
         console.log('Skipping link (already tracked or special):', url);
         return match;
       }
 
-      const trackingUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/track/click/${messageId}?url=${encodeURIComponent(url)}`;
+        // Build click tracking URL. Use BACKEND_URL when set, and ensure messageId
+        // and target url are properly encoded.
+        const backend = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+        const trackingUrl = `${backend}/api/track/click/${encodeURIComponent(messageId)}?url=${encodeURIComponent(url)}`;
       console.log('Converting URL:', url, 'to tracking URL:', trackingUrl);
       
       return match.replace(url, trackingUrl);
