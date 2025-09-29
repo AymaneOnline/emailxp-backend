@@ -353,6 +353,48 @@ class AnalyticsService {
         console.warn('Failed to compute campaign fallback totals for dashboard overview:', e.message || e);
       }
 
+      // Compute open/click rate fallbacks from EmailTracking only when
+      // analytics aggregation did not provide avgOpenRate/avgClickRate.
+      let fallbackAvgOpenRate = 0;
+      let fallbackAvgClickRate = 0;
+      if (!aggregated.avgOpenRate || !aggregated.avgClickRate) {
+        try {
+          const etPipeline = [
+            // Only consider tracking records in the timeframe
+            { $match: { sentAt: { $gte: periodStart } } },
+            // Join campaigns to scope by user
+            { $lookup: {
+              from: 'campaigns',
+              localField: 'campaign',
+              foreignField: '_id',
+              as: 'campaignDoc'
+            } },
+            { $unwind: '$campaignDoc' },
+            { $match: { 'campaignDoc.user': new mongoose.Types.ObjectId(userId) } },
+            { $group: {
+              _id: null,
+              delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+              uniqueOpens: { $sum: { $cond: ['$isOpened', 1, 0] } },
+              uniqueClicks: { $sum: { $cond: ['$isClicked', 1, 0] } }
+            } }
+          ];
+
+          const etAgg = await EmailTracking.aggregate(etPipeline);
+          if (Array.isArray(etAgg) && etAgg[0]) {
+            const delivered = etAgg[0].delivered || 0;
+            const uniqueOpens = etAgg[0].uniqueOpens || 0;
+            const uniqueClicks = etAgg[0].uniqueClicks || 0;
+
+            if (delivered > 0) {
+              fallbackAvgOpenRate = (uniqueOpens / delivered) * 100;
+              fallbackAvgClickRate = (uniqueClicks / delivered) * 100;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to compute EmailTracking fallback rates for dashboard overview:', e.message || e);
+        }
+      }
+
       // Get campaign performance
       const topCampaigns = await Analytics.getTopPerformers(userId, 'openRate', 5);
       
@@ -383,8 +425,10 @@ class AnalyticsService {
           // analytics are not available or appear to be empty.
           totalSent: (aggregated.totalSent && aggregated.totalSent > 0) ? aggregated.totalSent : campaignSentFallback || 0,
           totalDelivered: (aggregated.totalDelivered && aggregated.totalDelivered > 0) ? aggregated.totalDelivered : campaignDeliveredFallback || 0,
-          avgOpenRate: aggregated.avgOpenRate || 0,
-          avgClickRate: aggregated.avgClickRate || 0,
+          // Prefer analytics aggregation averages when present; otherwise
+          // use the EmailTracking-derived fallback rates computed above.
+          avgOpenRate: (aggregated.avgOpenRate && aggregated.avgOpenRate > 0) ? aggregated.avgOpenRate : (fallbackAvgOpenRate || 0),
+          avgClickRate: (aggregated.avgClickRate && aggregated.avgClickRate > 0) ? aggregated.avgClickRate : (fallbackAvgClickRate || 0),
           avgUnsubscribeRate: aggregated.avgUnsubscribeRate || 0,
           sentCampaignsCount: sentCampaignsCount
         },
