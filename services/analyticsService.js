@@ -365,6 +365,18 @@ class AnalyticsService {
       // Get recent activity
       const recentActivity = await this.getRecentActivity(userId, 10);
 
+      // Count campaigns sent in timeframe as an explicit metric
+      let sentCampaignsCount = 0;
+      try {
+        const sentCountAgg = await Campaign.aggregate([
+          { $match: { user: new mongoose.Types.ObjectId(userId), status: 'sent', createdAt: { $gte: periodStart } } },
+          { $group: { _id: null, count: { $sum: 1 } } }
+        ]);
+        if (Array.isArray(sentCountAgg) && sentCountAgg[0]) sentCampaignsCount = sentCountAgg[0].count || 0;
+      } catch (e) {
+        console.warn('Failed to compute sentCampaignsCount for dashboard overview:', e.message || e);
+      }
+
       return {
         overview: {
           // Prefer analytics aggregation, but fall back to campaign sums when
@@ -373,7 +385,8 @@ class AnalyticsService {
           totalDelivered: (aggregated.totalDelivered && aggregated.totalDelivered > 0) ? aggregated.totalDelivered : campaignDeliveredFallback || 0,
           avgOpenRate: aggregated.avgOpenRate || 0,
           avgClickRate: aggregated.avgClickRate || 0,
-          avgUnsubscribeRate: aggregated.avgUnsubscribeRate || 0
+          avgUnsubscribeRate: aggregated.avgUnsubscribeRate || 0,
+          sentCampaignsCount: sentCampaignsCount
         },
         topCampaigns,
         trendData,
