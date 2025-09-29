@@ -164,6 +164,10 @@ class EmailService {
     const backendUrl = process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
       try { console.log('Generating tracking pixel with backendUrl:', backendUrl); } catch (e) { /* ignore */ }
       const trackingPixel = `<img src="${backendUrl.replace(/\/$/, '')}/api/track/open/${encodeURIComponent(messageId)}" width="1" height="1" style="display:none;" alt="" />`;
+      // Debug: print the exact pixel inserted when not in production to help verify env
+      if (process.env.NODE_ENV !== 'production') {
+        try { console.log('[TRACKING DEBUG] trackingPixel:', trackingPixel); } catch (e) { /* ignore */ }
+      }
     
     // Try to insert before closing body tag, otherwise append
     if (html.includes('</body>')) {
